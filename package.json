@@ -12,10 +12,13 @@
   "bugs": {
     "url": "https://github.com/nhathoang0110/hccs/issues"
   },
-  "os": ["darwin", "linux"],
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "bin": {
-    "hccs": "./hccs",
-    "hccs-attribution-hook": "./hccs-attribution-hook"
+    "hccs": "hccs",
+    "hccs-attribution-hook": "hccs-attribution-hook"
   },
   "files": [
     "hccs",
