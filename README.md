@@ -7,6 +7,7 @@
 
 A thin wrapper around [`claude`](https://claude.com/claude-code) — one shared `~/.claude` (history, agents, skills, hooks), separate logins, and a local per-account **usage & cost dashboard**.
 
+[![npm](https://img.shields.io/npm/v/%40hoangnn23%2Fhccs?color=cb3837&logo=npm)](https://www.npmjs.com/package/@hoangnn23/hccs)
 [![CI](https://github.com/nhathoang0110/hccs/actions/workflows/ci.yml/badge.svg)](https://github.com/nhathoang0110/hccs/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-8b5cf6)
