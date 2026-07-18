@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+#
+# hccs-attribution-hook — Claude Code SessionStart hook.
+#
+# Appends one jsonl line {ts, session_id, account, source} to
+# ~/.hccs/usage/attribution.jsonl so the dashboard can attribute usage
+# per account. The account is derived from CLAUDE_CONFIG_DIR (the env var
+# hccs sets when launching claude):
+#   ~/.hccs/accounts/<acc>  → "<acc>"
+#   (unset)                 → "default"          (plain claude)
+#   any other dir           → "other:<basename>" (e.g. another wrapper tool)
+#
+# MUST NEVER FAIL: this runs during claude startup — every error is swallowed,
+# no network access, unconditional exit 0 so claude can never be broken or
+# slowed down by it.
+{
+  case "${CLAUDE_CONFIG_DIR:-}" in
+    "$HOME/.hccs/accounts/"*) acc="$(basename "$CLAUDE_CONFIG_DIR")" ;;
+    "")                       acc="default" ;;
+    *)                        acc="other:$(basename "$CLAUDE_CONFIG_DIR")" ;;
+  esac
+  mkdir -p "$HOME/.hccs/usage"
+  # python reads stdin and emits the whole JSON line (json.dumps → proper escaping).
+  python3 -c '
+import json, sys, datetime
+try:
+    d = json.load(sys.stdin)
+    sid = d.get("session_id")
+    if sid:
+        print(json.dumps({
+            "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "session_id": str(sid),
+            "account": sys.argv[1],
+            "source": str(d.get("source") or ""),
+        }))
+except Exception:
+    pass
+' "$acc" >> "$HOME/.hccs/usage/attribution.jsonl"
+} 2>/dev/null
+exit 0

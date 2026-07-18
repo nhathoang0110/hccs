@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hccs dashboard</title>
+<style>
+  :root {
+    /* Dark (default): soft blue-gray, not pure black — clearer borders/text */
+    --bg: #10151d;
+    --panel: #182030;
+    --panel-2: #1f2a3d;
+    --border: #33415c;
+    --border-soft: #263349;
+    --text: #edf2f9;
+    --muted: #9fadc2;
+    --faint: #6b7a92;
+    --accent: #4c9aff;
+    --amber: #f0b429;
+    --green: #4ade80;
+    --red: #f87171;
+    --tip-bg: #243044;
+    --hit: rgba(255, 255, 255, .06);
+    --shadow: 0 8px 24px rgba(0, 0, 0, .5);
+    --radius: 10px;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f6fa;
+    --panel: #ffffff;
+    --panel-2: #eef2f7;
+    --border: #c9d3e0;
+    --border-soft: #e1e7f0;
+    --text: #1c2433;
+    --muted: #5a6a80;
+    --faint: #8695aa;
+    --accent: #1d6fd8;
+    --amber: #b45309;
+    --green: #15803d;
+    --red: #b91c1c;
+    --tip-bg: #ffffff;
+    --hit: rgba(28, 36, 51, .06);
+    --shadow: 0 8px 24px rgba(28, 36, 51, .18);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    font-family: var(--sans);
+    color: var(--text);
+    background: var(--bg);
+    font-size: 14px;
+    line-height: 1.5;
+    padding: 28px 32px 48px;
+    max-width: 1240px;
+    margin: 0 auto;
+  }
+  a { color: var(--accent); }
+  button { font: inherit; cursor: pointer; }
+  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+  /* ── Header ─────────────────────────────────────────── */
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  h1 { font-family: var(--mono); font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+  h1 .dot { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13px; }
+  .spacer { flex: 1; }
+  .refresh, .theme-btn {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 14px; font-size: 13px;
+    transition: border-color .15s, background .15s;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .refresh:hover, .theme-btn:hover { border-color: var(--accent); }
+  .theme-btn { padding: 6px 10px; }
+  .theme-btn svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.8; }
+  :root:not([data-theme="light"]) .icon-moon { display: none; }
+  :root[data-theme="light"] .icon-sun { display: none; }
+  .pricing-note { color: var(--faint); font-size: 12px; margin-bottom: 22px; }
+
+  /* ── Stat strip ─────────────────────────────────────── */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 26px; }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius);
+    padding: 14px 18px;
+  }
+  .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .stat .value { font-family: var(--mono); font-size: 24px; font-weight: 600; margin-top: 2px; }
+  .stat .aux { color: var(--faint); font-size: 12px; font-family: var(--mono); }
+
+  /* ── Section titles ─────────────────────────────────── */
+  h2 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin: 30px 0 12px; }
+
+  /* ── Account cards ──────────────────────────────────── */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius);
+    padding: 16px 18px 12px; border-top: 3px solid var(--acc-color, var(--border));
+  }
+  .card .head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+  .card .name { font-family: var(--mono); font-weight: 600; font-size: 15px; }
+  .badge {
+    font-size: 10.5px; padding: 1px 7px; border-radius: 20px; border: 1px solid var(--border);
+    color: var(--muted); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap;
+  }
+  .badge.ok { color: var(--green); border-color: currentColor; }
+  .badge.warn { color: var(--amber); border-color: currentColor; }
+  .card .email { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  .card td { padding: 4px 0; font-size: 13px; border-top: 1px solid var(--border-soft); }
+  .card td.k { color: var(--muted); }
+  .card td.v { text-align: right; font-family: var(--mono); font-weight: 500; }
+  .card td.t { text-align: right; color: var(--faint); font-family: var(--mono); font-size: 11.5px; width: 78px; }
+  .card .last { color: var(--faint); font-size: 11.5px; margin-top: 10px; font-family: var(--mono); }
+
+  /* ── Chart ──────────────────────────────────────────── */
+  .chart-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    background: transparent; color: var(--muted); border: 0; padding: 5px 16px; font-size: 13px;
+    transition: background .15s, color .15s;
+  }
+  .seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); font-weight: 600; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .legend .item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .chart-wrap {
+    background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius);
+    padding: 18px 14px 8px; position: relative;
+  }
+  .chart-wrap svg { display: block; width: 100%; }
+  .bar-seg { shape-rendering: crispEdges; }
+  .bar-hit { fill: transparent; }
+  .bar-hit:hover { fill: var(--hit); }
+  .axis text { fill: var(--faint); font-size: 10.5px; font-family: var(--mono); }
+  .grid line { stroke: var(--border-soft); }
+  .tooltip {
+    position: absolute; pointer-events: none; z-index: 10; display: none;
+    background: var(--tip-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; font-size: 12px; min-width: 170px;
+    box-shadow: var(--shadow);
+  }
+  .tooltip .date { font-family: var(--mono); font-weight: 600; margin-bottom: 6px; }
+  .tooltip .row { display: flex; justify-content: space-between; gap: 16px; padding: 1px 0; }
+  .tooltip .row .n { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .tooltip .row .v { font-family: var(--mono); }
+  .tooltip .total { border-top: 1px solid var(--border); margin-top: 5px; padding-top: 5px; font-weight: 600; }
+  .empty { color: var(--faint); text-align: center; padding: 48px 0; font-size: 13px; }
+
+  /* ── Model table + auth panel ───────────────────────── */
+  .panel { background: var(--panel); border: 1px solid var(--border-soft); border-radius: var(--radius); overflow-x: auto; }
+  .panel table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .panel th {
+    text-align: left; color: var(--muted); font-weight: 500; font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: .06em;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel-2);
+  }
+  .panel td { padding: 8px 16px; border-bottom: 1px solid var(--border-soft); }
+  .panel tr:last-child td { border-bottom: 0; }
+  .panel td.num, .panel th.num { text-align: right; font-family: var(--mono); }
+  .cli {
+    font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--border-soft);
+    border-radius: 6px; padding: 2px 8px; color: var(--muted); display: inline-block;
+  }
+  .copy {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; padding: 1px 8px; font-size: 11.5px; margin-left: 6px;
+    transition: color .15s, border-color .15s;
+  }
+  .copy:hover { color: var(--text); border-color: var(--accent); }
+
+  /* ── Banners / footer ───────────────────────────────── */
+  .banner {
+    border: 1px solid var(--amber);
+    background: var(--panel);
+    color: var(--amber); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin: 16px 0;
+  }
+  .banner code { color: inherit; }
+  footer { margin-top: 34px; color: var(--faint); font-size: 12px; line-height: 1.7; }
+  footer code { font-family: var(--mono); color: var(--muted); }
+
+  @media (max-width: 640px) {
+    body { padding: 18px 14px 40px; }
+    .cards { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stat .value { font-size: 20px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>hccs<span class="dot">·</span>dashboard</h1>
+  <span class="sub" id="gen-at"></span>
+  <span class="spacer"></span>
+  <button class="theme-btn" id="theme-toggle" aria-label="Toggle light/dark theme">
+    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  </button>
+  <button class="refresh" onclick="location.reload()" aria-label="Reload data">↻ Refresh</button>
+</header>
+<p class="pricing-note">Costs are <strong>API-equivalent USD</strong> — computed from Anthropic API prices, not your actual subscription bill.</p>
+
+<div id="banners"></div>
+<section class="stats" id="stats" aria-label="Cost overview"></section>
+
+<h2>Cost by account, last 30 days</h2>
+<div class="chart-head">
+  <div class="seg" role="group" aria-label="Chart mode">
+    <button id="mode-cost" aria-pressed="true">Cost</button>
+    <button id="mode-tokens" aria-pressed="false">Tokens</button>
+  </div>
+  <div class="legend" id="legend"></div>
+</div>
+<div class="chart-wrap">
+  <div id="chart"></div>
+  <div class="tooltip" id="tooltip"></div>
+</div>
+
+<h2>Accounts</h2>
+<section class="cards" id="cards"></section>
+
+<h2>By model (all-time)</h2>
+<div class="panel">
+  <table aria-label="Cost by model">
+    <thead><tr><th>Model</th><th class="num">Msgs</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache W</th><th class="num">Cache R</th><th class="num">Cost</th></tr></thead>
+    <tbody id="models"></tbody>
+  </table>
+</div>
+
+<h2>Auth (read-only)</h2>
+<div class="panel">
+  <table aria-label="Account login status">
+    <thead><tr><th>Account</th><th>Email</th><th>Credential</th><th>CLI</th></tr></thead>
+    <tbody id="auth"></tbody>
+  </table>
+</div>
+
+<footer id="meta-foot"></footer>
+
+<script>
+"use strict";
+// Theme: localStorage > prefers-color-scheme > dark. Applied early to avoid a flash.
+(function () {
+  var t = null;
+  try { t = localStorage.getItem("hccs-theme"); } catch (e) {}
+  if (!t) t = (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  if (t === "light") document.documentElement.setAttribute("data-theme", "light");
+})();
+// Fixed palette assigned by sorted account name → stable colors across loads.
+// Mid-saturation 500-tone — readable on both dark and light backgrounds.
+var PALETTE = ["#3b82f6", "#8b5cf6", "#f59e0b", "#10b981", "#ec4899", "#06b6d4", "#f97316", "#64748b"];
+var $ = function (id) { return document.getElementById(id); };
+var esc = function (s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+};
+
+function fmtCost(v) {
+  if (v >= 1000) return "$" + (v / 1000).toFixed(2) + "K";
+  if (v >= 100) return "$" + v.toFixed(0);
+  return "$" + v.toFixed(2);
+}
+function fmtTok(v) {
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (v >= 1e3) return (v / 1e3).toFixed(0) + "K";
+  return String(v);
+}
+function tokOf(b) { return b.input + b.output + b.cache_w5m + b.cache_w1h + b.cache_read; }
+
+var DATA = null, MODE = "cost", COLORS = {};
+
+function load() {
+  fetch("/api/data").then(function (r) { return r.json(); }).then(function (d) {
+    DATA = d;
+    var names = {};
+    d.accounts.forEach(function (a) { names[a.name] = 1; });
+    d.daily.forEach(function (day) { Object.keys(day.accounts).forEach(function (n) { names[n] = 1; }); });
+    Object.keys(names).sort().forEach(function (n, i) { COLORS[n] = PALETTE[i % PALETTE.length]; });
+    render();
+  }).catch(function () {
+    $("chart").innerHTML = '<div class="empty">Could not load data — is the server still running? (hccs dashboard)</div>';
+  });
+}
+
+function render() {
+  var d = DATA;
+  $("gen-at").textContent = "updated " + d.meta.generated_at + " · scan " + d.meta.scan_ms + "ms";
+  renderBanners(d); renderStats(d); renderLegend(d); renderChart(d);
+  renderCards(d); renderModels(d); renderAuth(d); renderFooter(d);
+}
+
+function renderBanners(d) {
+  var b = [];
+  if (d.meta.unpriced_models.length)
+    b.push("⚠ Models without a price (cost counted as 0): " + d.meta.unpriced_models.map(esc).join(", ") +
+           " — add them to <code>~/.hccs/pricing.json</code>.");
+  $("banners").innerHTML = b.map(function (x) { return '<div class="banner">' + x + "</div>"; }).join("");
+}
+
+function renderStats(d) {
+  var per = ["today", "d7", "d30", "all"];
+  var label = { today: "Today", d7: "7 days", d30: "30 days", all: "All time" };
+  var html = per.map(function (p) {
+    var cost = 0, tok = 0, msgs = 0;
+    d.accounts.forEach(function (a) { cost += a[p].cost; tok += tokOf(a[p]); msgs += a[p].msgs; });
+    if (p === "all") { // unattributed still counts toward the all-time total, for honesty
+      cost += d.meta.unattributed.cost; tok += tokOf(d.meta.unattributed); msgs += d.meta.unattributed.msgs;
+    }
+    return '<div class="stat"><div class="label">' + label[p] + '</div>' +
+      '<div class="value">' + fmtCost(cost) + '</div>' +
+      '<div class="aux">' + fmtTok(tok) + " tok · " + msgs + " msg</div></div>";
+  });
+  $("stats").innerHTML = html.join("");
+}
+
+function renderLegend(d) {
+  var names = {};
+  d.daily.forEach(function (day) { Object.keys(day.accounts).forEach(function (n) { names[n] = 1; }); });
+  $("legend").innerHTML = Object.keys(names).sort().map(function (n) {
+    return '<span class="item"><span class="sw" style="background:' + COLORS[n] + '"></span>' + esc(n) + "</span>";
+  }).join("");
+}
+
+/* ── SVG stacked bar chart ── */
+function renderChart(d) {
+  var el = $("chart");
+  var days = [], i, dt;
+  var today = new Date();
+  for (i = 29; i >= 0; i--) {
+    dt = new Date(today); dt.setDate(dt.getDate() - i);
+    days.push(dt.getFullYear() + "-" + String(dt.getMonth() + 1).padStart(2, "0") + "-" + String(dt.getDate()).padStart(2, "0"));
+  }
+  var byDate = {};
+  d.daily.forEach(function (x) { byDate[x.date] = x.accounts; });
+  var val = function (a) { return MODE === "cost" ? a.cost : a.tokens; };
+  var max = 0;
+  days.forEach(function (day) {
+    var t = 0, accs = byDate[day] || {};
+    Object.keys(accs).forEach(function (n) { t += val(accs[n]); });
+    if (t > max) max = t;
+  });
+  if (max <= 0) { el.innerHTML = '<div class="empty">No data in the last 30 days.</div>'; return; }
+
+  var W = Math.max(el.clientWidth || 900, 560), H = 240, padL = 52, padB = 22, padT = 8;
+  var iw = W - padL - 10, ih = H - padB - padT;
+  var bw = iw / days.length;
+  var y = function (v) { return padT + ih * (1 - v / max); };
+  var svg = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
+    (MODE === "cost" ? "Cost" : "Token") + ' chart, last 30 days by account">';
+
+  svg += '<g class="grid">';
+  var fmtY = MODE === "cost" ? fmtCost : fmtTok;
+  for (i = 0; i <= 4; i++) {
+    var gv = max * i / 4, gy = y(gv);
+    svg += '<line x1="' + padL + '" y1="' + gy + '" x2="' + (W - 10) + '" y2="' + gy + '"/>';
+    svg += '<g class="axis"><text x="' + (padL - 6) + '" y="' + (gy + 3.5) + '" text-anchor="end">' + fmtY(gv) + "</text></g>";
+  }
+  svg += "</g>";
+
+  days.forEach(function (day, di) {
+    var accs = byDate[day] || {};
+    var x = padL + di * bw;
+    var acc0 = 0;
+    Object.keys(accs).sort().forEach(function (n) {
+      var v = val(accs[n]);
+      if (v <= 0) return;
+      var y1 = y(acc0 + v), y0 = y(acc0);
+      svg += '<rect class="bar-seg" x="' + (x + bw * 0.14).toFixed(1) + '" y="' + y1.toFixed(1) +
+        '" width="' + (bw * 0.72).toFixed(1) + '" height="' + Math.max(y0 - y1, 0.5).toFixed(1) +
+        '" fill="' + COLORS[n] + '" rx="1"/>';
+      acc0 += v;
+    });
+    // full-column hit area so the tooltip works without hitting a bar exactly
+    svg += '<rect class="bar-hit" data-day="' + day + '" x="' + x.toFixed(1) + '" y="' + padT +
+      '" width="' + bw.toFixed(1) + '" height="' + ih + '"/>';
+    if (di % 5 === 0 || di === days.length - 1)
+      svg += '<g class="axis"><text x="' + (x + bw / 2).toFixed(1) + '" y="' + (H - 6) +
+        '" text-anchor="middle">' + day.slice(5) + "</text></g>";
+  });
+  svg += "</svg>";
+  el.innerHTML = svg;
+
+  var tip = $("tooltip"), wrap = el.parentElement;
+  el.querySelectorAll(".bar-hit").forEach(function (r) {
+    r.addEventListener("mousemove", function (ev) {
+      var day = r.getAttribute("data-day"), accs = byDate[day] || {};
+      var rows = Object.keys(accs).sort().filter(function (n) { return val(accs[n]) > 0; });
+      var fmt = MODE === "cost" ? function (v) { return "$" + v.toFixed(2); } : fmtTok;
+      var total = 0;
+      rows.forEach(function (n) { total += val(accs[n]); });
+      tip.innerHTML = '<div class="date">' + day + "</div>" +
+        (rows.length ? rows.map(function (n) {
+            return '<div class="row"><span class="n"><span class="sw" style="width:8px;height:8px;border-radius:2px;background:' +
+              COLORS[n] + ';display:inline-block"></span>' + esc(n) + '</span><span class="v">' + fmt(val(accs[n])) + "</span></div>";
+          }).join("") +
+          '<div class="row total"><span class="n">total</span><span class="v">' + fmt(total) + "</span></div>"
+        : '<div class="row"><span class="n">no usage</span></div>');
+      tip.style.display = "block";
+      var wr = wrap.getBoundingClientRect();
+      var tx = ev.clientX - wr.left + 14, ty = ev.clientY - wr.top - 10;
+      if (tx + tip.offsetWidth > wr.width - 8) tx = ev.clientX - wr.left - tip.offsetWidth - 14;
+      tip.style.left = tx + "px"; tip.style.top = ty + "px";
+    });
+    r.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+  });
+}
+
+function renderCards(d) {
+  var kindLabel = { hccs: "hccs", default: "default claude", other: "other source", removed: "removed" };
+  $("cards").innerHTML = d.accounts.map(function (a) {
+    var cred = a.logged_in === true ? '<span class="badge ok">● logged in</span>'
+             : a.logged_in === false ? '<span class="badge warn">○ not logged in</span>' : "";
+    var rows = [["Today", a.today], ["7 days", a.d7], ["30 days", a.d30], ["All time", a.all]]
+      .map(function (kv) {
+        var b = kv[1];
+        return '<tr><td class="k">' + kv[0] + '</td><td class="t">' + (b.msgs ? fmtTok(tokOf(b)) + " tok" : "—") +
+          '</td><td class="v">' + (b.msgs ? fmtCost(b.cost) : "—") + "</td></tr>";
+      }).join("");
+    return '<div class="card" style="--acc-color:' + (COLORS[a.name] || "var(--border)") + '">' +
+      '<div class="head"><span class="name">' + esc(a.name) + '</span>' +
+      '<span class="badge">' + (kindLabel[a.kind] || esc(a.kind)) + "</span>" + cred + "</div>" +
+      '<div class="email">' + esc(a.email || "—") + "</div>" +
+      "<table>" + rows + "</table>" +
+      '<div class="last">' + (a.last_used ? "last used: " + a.last_used : "no usage yet") + "</div></div>";
+  }).join("");
+}
+
+function renderModels(d) {
+  var rows = Object.keys(d.by_model).filter(function (m) { return m !== "<synthetic>"; });
+  $("models").innerHTML = rows.map(function (m) {
+    var b = d.by_model[m];
+    return '<tr><td style="font-family:var(--mono)">' + esc(m) + '</td><td class="num">' + b.msgs + "</td>" +
+      '<td class="num">' + fmtTok(b.input) + '</td><td class="num">' + fmtTok(b.output) + "</td>" +
+      '<td class="num">' + fmtTok(b.cache_w5m + b.cache_w1h) + '</td><td class="num">' + fmtTok(b.cache_read) + "</td>" +
+      '<td class="num">' + fmtCost(b.cost) + "</td></tr>";
+  }).join("") || '<tr><td colspan="7" class="empty">No data yet.</td></tr>';
+}
+
+function renderAuth(d) {
+  var accs = d.accounts.filter(function (a) { return a.kind === "hccs" || a.kind === "default"; });
+  $("auth").innerHTML = accs.map(function (a) {
+    var cred = a.logged_in === true ? '<span class="badge ok">● OK</span>'
+             : '<span class="badge warn">○ not logged in</span>';
+    var cmd = a.kind === "default" ? "claude /login"
+            : a.logged_in ? "hccs " + a.name : "hccs add " + a.name;
+    return '<tr><td style="font-family:var(--mono);font-weight:600">' + esc(a.name) + "</td>" +
+      "<td>" + esc(a.email || "—") + "</td><td>" + cred + "</td>" +
+      '<td><span class="cli">' + esc(cmd) + '</span><button class="copy" data-cmd="' + esc(cmd) +
+      '" aria-label="Copy command ' + esc(cmd) + '">copy</button></td></tr>';
+  }).join("");
+  $("auth").querySelectorAll(".copy").forEach(function (b) {
+    b.addEventListener("click", function () {
+      navigator.clipboard.writeText(b.getAttribute("data-cmd")).then(function () {
+        b.textContent = "✓";
+        setTimeout(function () { b.textContent = "copy"; }, 1200);
+      }, function () { b.textContent = "error"; });
+    });
+  });
+}
+
+function renderFooter(d) {
+  var m = d.meta, u = m.unattributed;
+  var parts = [m.file_count + " transcript files · " + m.total_msgs + " messages · scanned in " + m.scan_ms + "ms"];
+  if (m.unattributed_sessions > 0)
+    parts.push(m.unattributed_sessions + " sessions predate the attribution hook (" + fmtCost(u.cost) + ", " +
+      fmtTok(tokOf(u)) + " tok) — counted in the all-time total as unattributed.");
+  parts.push("Anthropic API price table; cache write 5m ×1.25 / 1h ×2; override via <code>~/.hccs/pricing.json</code>.");
+  $("meta-foot").innerHTML = parts.join("<br>");
+}
+
+$("theme-toggle").addEventListener("click", function () {
+  var root = document.documentElement;
+  var light = root.getAttribute("data-theme") !== "light";
+  if (light) root.setAttribute("data-theme", "light");
+  else root.removeAttribute("data-theme");
+  try { localStorage.setItem("hccs-theme", light ? "light" : "dark"); } catch (e) {}
+});
+
+$("mode-cost").addEventListener("click", function () { setMode("cost"); });
+$("mode-tokens").addEventListener("click", function () { setMode("tokens"); });
+function setMode(m) {
+  MODE = m;
+  $("mode-cost").setAttribute("aria-pressed", String(m === "cost"));
+  $("mode-tokens").setAttribute("aria-pressed", String(m === "tokens"));
+  if (DATA) renderChart(DATA);
+}
+var rsz;
+window.addEventListener("resize", function () {
+  clearTimeout(rsz);
+  rsz = setTimeout(function () { if (DATA) renderChart(DATA); }, 150);
+});
+load();
+</script>
+</body>
+</html>

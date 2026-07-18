@@ -1,0 +1,408 @@
+#!/usr/bin/env bash
+#
+# hccs — Claude Code account switcher
+#
+# A thin wrapper around `claude` that lets you switch between multiple Claude
+# Code accounts without re-authenticating every time. It works by giving each
+# account its own CLAUDE_CONFIG_DIR, so Claude Code keeps credentials and the
+# .claude.json identity file separate per account, while everything else in
+# ~/.claude (agents/skills/hooks/commands/settings/projects/history) is
+# symlinked and shared. Only authentication differs between accounts.
+#
+# Supported on macOS and Linux. Credential storage differs by OS
+# (see `forget_credentials`):
+#   macOS : Keychain, slot "Claude Code-credentials-<sha256(configDir)[:8]>"
+#   Linux : file "<configDir>/.credentials.json" (isolated by directory)
+#
+set -euo pipefail
+
+# ── Config (overridable via env) ────────────────────────────────────────────
+# hccs owns ~/.hccs. It must NOT touch ~/.ccs, which belongs to the `ccs` tool.
+HCCS_HOME="${HCCS_HOME:-$HOME/.hccs}"
+HCCS_CLAUDE_DIR="${HCCS_CLAUDE_DIR:-$HOME/.claude}"
+HCCS_OS="$(uname -s)"
+
+# ── Output helpers ──────────────────────────────────────────────────────────
+die()  { printf 'hccs: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'hccs: %s\n' "$*" >&2; }
+info() { printf '%s\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+hccs — switch Claude Code accounts without re-login
+
+Usage:
+  hccs <account> [claude args...]   Run claude as <account> (all flags pass through)
+  hccs add <account> [claude args]  Create a new account and log in once
+  hccs list                         List accounts and emails
+  hccs which                        Show the most recently used account
+  hccs remove <account>             Delete an account (config + credentials)
+  hccs dashboard [--port N]         Open the usage/cost dashboard (localhost)
+  hccs setup-hook                   Register the SessionStart attribution hook
+  hccs uninstall                    Remove hccs completely (default Claude untouched)
+  hccs -h | --help                  Show this help
+
+Examples:
+  hccs add work
+  hccs work --resume
+  hccs personal -p "hello"
+EOF
+}
+
+# ── Guards ──────────────────────────────────────────────────────────────────
+require_platform() {
+  case "$HCCS_OS" in
+    Darwin)
+      # macOS stores credentials in the Keychain → need `security` + `shasum`
+      # (to compute the per-config-dir slot name).
+      command -v security >/dev/null 2>&1 || die "'security' (Keychain) not found"
+      command -v shasum   >/dev/null 2>&1 || die "'shasum' not found"
+      ;;
+    Linux)
+      # Linux stores credentials as a file inside the config dir → no extra tools.
+      :
+      ;;
+    *) die "hccs supports macOS and Linux only (detected: $HCCS_OS)" ;;
+  esac
+  command -v python3 >/dev/null 2>&1 || die "'python3' not found (required to parse config)"
+}
+
+# Valid account names: letters/digits/_/-/. ; not "." or ".." (path traversal);
+# must not collide with a subcommand name (so switching to it stays reachable).
+validate_name() {
+  local acc="$1"
+  case "$acc" in
+    ""|.|..) die "invalid account name: '$acc'" ;;
+    add|list|which|remove|uninstall|dashboard|setup-hook) die "'$acc' collides with an hccs command — pick another name" ;;
+  esac
+  [[ "$acc" =~ ^[A-Za-z0-9_.-]+$ ]] || die "account name may only contain [A-Za-z0-9_.-]: '$acc'"
+}
+
+# y/N confirmation. Non-interactive (no TTY) defaults to NO.
+confirm() {
+  local prompt="$1" reply
+  [ -e /dev/tty ] || return 1
+  printf '%s [y/N] ' "$prompt" >/dev/tty
+  read -r reply </dev/tty || return 1
+  case "$reply" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
+
+# ── Core helpers ────────────────────────────────────────────────────────────
+
+# Canonical config dir for an account (absolute, no trailing slash).
+# Keep this string IDENTICAL everywhere — the Keychain slot hash depends on it.
+cfgdir_for() { printf '%s/accounts/%s' "$HCCS_HOME" "$1"; }
+
+# [macOS] Keychain slot name Claude creates for a given config dir.
+# Matches cli.js: `sha256(CLAUDE_CONFIG_DIR).hex.substring(0,8)`.
+# VERIFIED: printf '%s' <dir> | shasum -a 256 | cut -c1-8 matches the real slot.
+slot_name() {
+  printf 'Claude Code-credentials-%s' \
+    "$(printf '%s' "$1" | shasum -a 256 | cut -c1-8)"
+}
+
+# Delete an account's stored credentials (used by remove/uninstall).
+#   macOS: the token lives outside the config dir (Keychain) → delete its slot.
+#   Linux: the credential is <configDir>/.credentials.json → removed together
+#          with the directory, nothing to do here.
+forget_credentials() {  # $1 = cfgdir
+  [ "$HCCS_OS" = "Darwin" ] || return 0
+  security delete-generic-password -a "$USER" -s "$(slot_name "$1")" >/dev/null 2>&1 \
+    || return 1
+}
+
+# Portable in-place sed: BSD sed (macOS) needs an empty arg after -i, GNU sed doesn't.
+sed_inplace() {  # $1 = expr, $2 = file
+  if [ "$HCCS_OS" = "Darwin" ]; then
+    sed -i '' -e "$1" "$2"
+  else
+    sed -i -e "$1" "$2"
+  fi
+}
+
+# Sync symlinks: link every entry of ~/.claude into the account dir, except the
+# auth files. Idempotent — runs on every switch so newly added entries in
+# ~/.claude are picked up automatically.
+sync_links() {
+  local cfg="$1" name link
+  mkdir -p "$cfg"
+  # ensure a REAL .claude.json exists (empty fallback; rich seed is seed_config's job)
+  [ -e "$cfg/.claude.json" ] || printf '{}' >"$cfg/.claude.json"
+
+  [ -d "$HCCS_CLAUDE_DIR" ] || return 0
+  shopt -s nullglob dotglob
+  local target
+  for target in "$HCCS_CLAUDE_DIR"/*; do
+    name="$(basename "$target")"
+    case "$name" in
+      .claude.json | .credentials.json) continue ;; # per-account, never shared
+    esac
+    link="$cfg/$name"
+    [ -L "$link" ] && continue                        # symlink already there → skip
+    if [ -e "$link" ]; then                           # unexpected real file (atomic-write detach)
+      warn "relinking $name (was a real file, restoring the shared link)"
+      rm -rf "$link"
+    fi
+    ln -s "$target" "$link"
+  done
+  shopt -u nullglob dotglob
+}
+
+# Seed .claude.json for a new account: copy ~/.claude.json minus the identity
+# keys (oauthAccount, userID) → keeps trust-dialog/mcpServers/tips while auth
+# starts fresh. Tokens are NOT in this file (macOS keeps them in the Keychain),
+# so copying is safe.
+seed_config() {
+  local dest="$1/.claude.json" src="$HOME/.claude.json"
+  [ -e "$dest" ] && return 0                          # already seeded → keep it
+  if [ -f "$src" ]; then
+    python3 - "$src" "$dest" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+for k in ("oauthAccount", "userID"):
+    d.pop(k, None)
+json.dump(d, open(sys.argv[2], "w"))
+PY
+  else
+    printf '{}' >"$dest"
+  fi
+}
+
+# Print the login email of a config dir (or "(not logged in)").
+email_of() {
+  python3 - "$1/.claude.json" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(d.get("oauthAccount", {}).get("emailAddress") or "(not logged in)")
+except Exception:
+    print("(not logged in)")
+PY
+}
+
+# Remove every hccs-attribution-hook entry from settings.json (idempotent,
+# best-effort — called from uninstall, so it must not die). Atomic write
+# (temp file + rename in the same directory).
+remove_hook() {
+  local settings="$HCCS_CLAUDE_DIR/settings.json"
+  [ -f "$settings" ] || return 0
+  python3 - "$settings" <<'PY' || warn "could not remove the hook from $settings (see backup in $HCCS_HOME/backup)"
+import json, os, sys, tempfile
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(0)                       # missing/corrupt file → nothing to remove
+if not isinstance(data, dict):
+    sys.exit(0)
+hooks = data.get("hooks")
+if not isinstance(hooks, dict):
+    sys.exit(0)
+ss = hooks.get("SessionStart")
+if not isinstance(ss, list):
+    sys.exit(0)
+changed, new_ss = False, []
+for entry in ss:
+    if isinstance(entry, dict) and isinstance(entry.get("hooks"), list):
+        kept = [h for h in entry["hooks"]
+                if not (isinstance(h, dict) and "hccs-attribution-hook" in str(h.get("command", "")))]
+        if len(kept) != len(entry["hooks"]):
+            changed = True
+            if not kept:
+                continue              # entry held only the hccs hook → drop it entirely
+            entry = dict(entry, hooks=kept)
+    new_ss.append(entry)
+if not changed:
+    sys.exit(0)
+if new_ss:
+    hooks["SessionStart"] = new_ss
+else:
+    del hooks["SessionStart"]
+    if not hooks:
+        del data["hooks"]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".settings.")
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.replace(tmp, path)
+PY
+}
+
+# ── Commands ────────────────────────────────────────────────────────────────
+
+cmd_setup_hook() {
+  local settings="$HCCS_CLAUDE_DIR/settings.json"
+  local hook_bin="$HOME/.local/bin/hccs-attribution-hook"
+  [ -x "$hook_bin" ] || die "$hook_bin is missing — run ./install.sh again"
+  mkdir -p "$HCCS_CLAUDE_DIR"
+  # Back up settings.json ONCE (before the first edit) so uninstall can be audited.
+  if [ -f "$settings" ] && ! ls "$HCCS_HOME/backup"/settings.json.* >/dev/null 2>&1; then
+    mkdir -p "$HCCS_HOME/backup"
+    cp "$settings" "$HCCS_HOME/backup/settings.json.$(date +%Y%m%d%H%M%S)"
+  fi
+  local rc=0
+  python3 - "$settings" "$hook_bin" <<'PY' || rc=$?
+import json, os, sys, tempfile
+path, cmd = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        data = json.load(f)
+except FileNotFoundError:
+    data = {}
+except Exception:
+    sys.exit(2)                       # corrupt JSON → refuse to touch it
+if not isinstance(data, dict):
+    sys.exit(2)
+hooks = data.setdefault("hooks", {})
+if not isinstance(hooks, dict):
+    sys.exit(2)
+ss = hooks.setdefault("SessionStart", [])
+if not isinstance(ss, list):
+    sys.exit(2)
+for entry in ss:                      # idempotent: already registered → done
+    if isinstance(entry, dict):
+        for h in entry.get("hooks") or []:
+            if isinstance(h, dict) and "hccs-attribution-hook" in str(h.get("command", "")):
+                sys.exit(3)
+ss.append({"matcher": "*", "hooks": [{"type": "command", "command": cmd}]})
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".settings.")
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.replace(tmp, path)
+PY
+  case "$rc" in
+    0) info "SessionStart hook registered in $settings" ;;
+    3) info "Hook already registered — nothing to do." ;;
+    *) die "could not edit $settings (corrupt JSON or unexpected hooks structure) — fix it manually and re-run" ;;
+  esac
+}
+
+cmd_switch() {
+  local acc="${1:-}"
+  [ -n "$acc" ] || { usage; exit 1; }
+  validate_name "$acc"
+  shift
+  command -v claude >/dev/null 2>&1 || die "'claude' not found in PATH"
+  local cfg; cfg="$(cfgdir_for "$acc")"
+  [ -d "$cfg" ] || die "account '$acc' does not exist. Run: hccs add $acc"
+  sync_links "$cfg"
+  mkdir -p "$HCCS_HOME"
+  printf '%s\n' "$acc" >"$HCCS_HOME/state"
+  CLAUDE_CONFIG_DIR="$cfg" exec claude "$@"
+}
+
+cmd_add() {
+  local acc="${1:-}"
+  [ -n "$acc" ] || die "account name required: hccs add <account>"
+  validate_name "$acc"
+  shift
+  command -v claude >/dev/null 2>&1 || die "'claude' not found in PATH"
+  local cfg; cfg="$(cfgdir_for "$acc")"
+  [ -d "$cfg" ] && die "account '$acc' already exists"
+  mkdir -p "$cfg"
+  seed_config "$cfg"          # copy ~/.claude.json minus oauthAccount/userID (BEFORE sync)
+  sync_links "$cfg"
+  mkdir -p "$HCCS_HOME"
+  printf '%s\n' "$acc" >"$HCCS_HOME/state"
+  info "Logging in account '$acc' (Claude will prompt; trust/MCP settings carry over from the default account)..."
+  CLAUDE_CONFIG_DIR="$cfg" exec claude "$@"
+}
+
+cmd_list() {
+  local d acc
+  [ -d "$HCCS_HOME/accounts" ] || { info "(no accounts yet)"; return 0; }
+  local found=0
+  for d in "$HCCS_HOME/accounts"/*/; do
+    [ -d "$d" ] || continue
+    found=1
+    acc="$(basename "$d")"
+    printf '%-20s %s\n' "$acc" "$(email_of "${d%/}")"
+  done
+  [ "$found" -eq 1 ] || info "(no accounts yet)"
+}
+
+cmd_which() {
+  local acc
+  acc="$(cat "$HCCS_HOME/state" 2>/dev/null || true)"
+  [ -n "$acc" ] || { info "(no account switched to yet)"; return 0; }
+  printf '%s  %s\n' "$acc" "$(email_of "$(cfgdir_for "$acc")")"
+}
+
+cmd_remove() {
+  local acc="${1:-}"
+  [ -n "$acc" ] || die "account name required: hccs remove <account>"
+  validate_name "$acc"
+  local cfg; cfg="$(cfgdir_for "$acc")"
+  [ -d "$cfg" ] || die "account '$acc' does not exist"
+  confirm "Delete account '$acc' (config + credentials)?" || { info "aborted."; return 0; }
+  forget_credentials "$cfg" \
+    || warn "no stored credentials found (maybe never logged in) — skipping"
+  rm -rf "$cfg"   # Linux: .credentials.json lives inside, removed together
+  [ "$(cat "$HCCS_HOME/state" 2>/dev/null || true)" = "$acc" ] && rm -f "$HCCS_HOME/state"
+  info "removed '$acc'"
+}
+
+cmd_dashboard() {
+  local dir="$HOME/.local/share/hccs"
+  [ -f "$dir/hccs-dashboard.py" ] || die "dashboard is not installed — run ./install.sh again"
+  exec python3 "$dir/hccs-dashboard.py" serve "$@"
+}
+
+cmd_uninstall() {
+  confirm "Uninstall hccs: delete $HCCS_HOME, the credentials of EVERY hccs account, and the binaries. The default Claude account is NOT affected. Continue?" \
+    || { info "aborted."; return 0; }
+  # 1) [macOS] delete each account's Keychain slot (NEVER the default
+  #    'Claude Code-credentials' slot). Linux: no-op — credentials live inside
+  #    the account dirs removed in step 3.
+  if [ -d "$HCCS_HOME/accounts" ]; then
+    local d
+    for d in "$HCCS_HOME/accounts"/*/; do
+      [ -d "$d" ] || continue
+      forget_credentials "${d%/}" || true
+    done
+  fi
+  # 2) remove the SessionStart hook from the REAL settings.json (before the
+  #    backup disappears in step 3)
+  remove_hook
+  # 3) delete all hccs data (rm -rf on symlinks removes the links only, it
+  #    never follows them into ~/.claude)
+  rm -rf "$HCCS_HOME"
+  # 4) remove binaries, helpers, and the PATH line added by install.sh
+  rm -f "$HOME/.local/bin/hccs" "$HOME/.local/bin/hccs-sync-ccs" \
+        "$HOME/.local/bin/hccs-attribution-hook"
+  rm -rf "$HOME/.local/share/hccs"
+  # Only delete the exact line install.sh added (tagged with the '# hccs' comment).
+  local rc
+  for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+    [ -f "$rc" ] || continue
+    sed_inplace '/# hccs$/d' "$rc" 2>/dev/null || true
+  done
+  info "hccs uninstalled. ~/.claude and the default account were not touched."
+}
+
+# ── Dispatch ────────────────────────────────────────────────────────────────
+main() {
+  local cmd="${1:-}"
+  # help/usage needs no platform guard → works everywhere
+  case "$cmd" in
+    "" | -h | --help) usage; return 0 ;;
+  esac
+  require_platform
+  case "$cmd" in
+    add)        shift; cmd_add "$@" ;;
+    list)       shift; cmd_list "$@" ;;
+    which)      shift; cmd_which "$@" ;;
+    remove)     shift; cmd_remove "$@" ;;
+    dashboard)  shift; cmd_dashboard "$@" ;;
+    setup-hook) shift; cmd_setup_hook "$@" ;;
+    uninstall)  shift; cmd_uninstall "$@" ;;
+    *)          cmd_switch "$@" ;;   # $1 = account name
+  esac
+}
+
+main "$@"
