@@ -1,16 +1,31 @@
-# hccs — Claude Code account switcher
+<div align="center">
+  <img src="docs/assets/logo.svg" alt="hccs logo" width="96">
+
+# hccs
+
+**Switch Claude Code accounts instantly. Know exactly what each one spends.**
+
+A thin wrapper around [`claude`](https://claude.com/claude-code) — one shared `~/.claude` (history, agents, skills, hooks), separate logins, and a local per-account **usage & cost dashboard**.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-8b5cf6)
+![Dependencies](https://img.shields.io/badge/runtime%20deps-none-10b981)
 
 **English** | [Tiếng Việt](README.vi.md)
 
-A thin CLI wrapper around [`claude`](https://claude.com/claude-code) that lets you **switch between multiple Claude Code accounts without re-authenticating**, plus a local **usage & cost dashboard** with accurate per-account attribution.
+</div>
 
 ```sh
 hccs work --resume        # run claude as account "work", every flag passes through
-hccs personal -p "hi"     # account "personal"
+hccs personal -p "hi"     # account "personal" — no re-login
 hccs dashboard            # per-account usage & cost, in your browser
 ```
 
-`hccs <account> [args...]` is equivalent to `claude [args...]` — `--resume`, `-c`, `-p`, everything works — it just runs under the account you picked.
+- 🔁 **Instant switching** — log in once per account, then `hccs <account>` just works
+- 🧰 **Full passthrough** — `hccs <account> [args...]` ≡ `claude [args...]` (`--resume`, `-c`, `-p`, ...)
+- 🤝 **Everything shared except auth** — agents, skills, hooks, settings, session history
+- 📊 **Accurate cost tracking** — per-account attribution, correct even across cross-account `--resume`
+- 🧹 **Clean uninstall** — your default Claude setup is never touched
 
 ![hccs dashboard](docs/assets/dashboard-dark.png)
 
@@ -38,12 +53,19 @@ Claude Code supports the `CLAUDE_CONFIG_DIR` environment variable. When set, Cla
 
 ## Install
 
+**Via npm:**
+
 ```sh
-git clone <this-repo> && cd <repo-dir>
-./install.sh
+npm install -g hccs
+hccs setup-hook      # register the dashboard attribution hook (once)
 ```
 
-Installs `hccs` into `~/.local/bin`, registers the dashboard attribution hook, and adds the PATH line if needed. Open a new terminal afterwards.
+**From source:**
+
+```sh
+git clone <this-repo> && cd <repo-dir>
+./install.sh         # installs into ~/.local/bin + registers the hook
+```
 
 **Requirements:** macOS or Linux, `claude` in PATH, `python3`.
 On Ubuntu/Debian: `sudo apt install python3` if missing.

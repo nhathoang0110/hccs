@@ -442,7 +442,12 @@ def serve(args):
     p.add_argument("--port", type=int, default=4780)
     p.add_argument("--no-open", action="store_true", help="do not open the browser")
     ns = p.parse_args(args)
-    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+    # UI file: next to this script (install.sh layout) or in ./dashboard
+    # (repo/npm package layout).
+    here = os.path.dirname(os.path.abspath(__file__))
+    html_path = os.path.join(here, "index.html")
+    if not os.path.exists(html_path):
+        html_path = os.path.join(here, "dashboard", "index.html")
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):

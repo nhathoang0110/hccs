@@ -236,8 +236,11 @@ PY
 
 cmd_setup_hook() {
   local settings="$HCCS_CLAUDE_DIR/settings.json"
-  local hook_bin="$HOME/.local/bin/hccs-attribution-hook"
-  [ -x "$hook_bin" ] || die "$hook_bin is missing — run ./install.sh again"
+  # The hook may live in ~/.local/bin (install.sh) or the npm global bin dir.
+  local hook_bin
+  hook_bin="$(command -v hccs-attribution-hook || true)"
+  [ -n "$hook_bin" ] || hook_bin="$HOME/.local/bin/hccs-attribution-hook"
+  [ -x "$hook_bin" ] || die "hccs-attribution-hook not found — run ./install.sh (or npm i -g hccs) again"
   mkdir -p "$HCCS_CLAUDE_DIR"
   # Back up settings.json ONCE (before the first edit) so uninstall can be audited.
   if [ -f "$settings" ] && ! ls "$HCCS_HOME/backup"/settings.json.* >/dev/null 2>&1; then
@@ -348,9 +351,15 @@ cmd_remove() {
 }
 
 cmd_dashboard() {
-  local dir="$HOME/.local/share/hccs"
-  [ -f "$dir/hccs-dashboard.py" ] || die "dashboard is not installed — run ./install.sh again"
-  exec python3 "$dir/hccs-dashboard.py" serve "$@"
+  # Locate hccs-dashboard.py for both install layouts:
+  #   npm/repo : next to this script (resolve the bin symlink first)
+  #   install.sh: ~/.local/share/hccs
+  local self_dir engine
+  self_dir="$(python3 -c 'import os, sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "$0")"
+  for engine in "$self_dir/hccs-dashboard.py" "$HOME/.local/share/hccs/hccs-dashboard.py"; do
+    [ -f "$engine" ] && exec python3 "$engine" serve "$@"
+  done
+  die "dashboard is not installed — run ./install.sh (or npm i -g hccs) again"
 }
 
 cmd_uninstall() {

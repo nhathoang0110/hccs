@@ -1,0 +1,32 @@
+{
+  "name": "hccs",
+  "version": "1.0.0",
+  "description": "Switch between multiple Claude Code accounts without re-authenticating, with a per-account usage & cost dashboard",
+  "license": "MIT",
+  "author": "hoangnn",
+  "os": ["darwin", "linux"],
+  "bin": {
+    "hccs": "./hccs",
+    "hccs-attribution-hook": "./hccs-attribution-hook"
+  },
+  "files": [
+    "hccs",
+    "hccs-attribution-hook",
+    "hccs-dashboard.py",
+    "dashboard/index.html",
+    "README.md",
+    "README.vi.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "account-switcher",
+    "cli",
+    "usage",
+    "dashboard"
+  ],
+  "engines": {
+    "node": ">=14"
+  }
+}

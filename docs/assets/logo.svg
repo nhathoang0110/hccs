@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1c2740"/>
+      <stop offset="1" stop-color="#0e131b"/>
+    </linearGradient>
+    <marker id="ab" markerUnits="userSpaceOnUse" markerWidth="20" markerHeight="20" refX="9" refY="10" orient="auto">
+      <path d="M2 3 L18 10 L2 17 z" fill="#4c9aff"/>
+    </marker>
+    <marker id="aa" markerUnits="userSpaceOnUse" markerWidth="20" markerHeight="20" refX="9" refY="10" orient="auto">
+      <path d="M2 3 L18 10 L2 17 z" fill="#f0b429"/>
+    </marker>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)" stroke="#33415c" stroke-width="2"/>
+  <!-- account swap: two arcs cycling -->
+  <path d="M40 47 A30 30 0 0 1 86 45" fill="none" stroke="#4c9aff" stroke-width="9" stroke-linecap="round" marker-end="url(#ab)"/>
+  <path d="M88 81 A30 30 0 0 1 42 83" fill="none" stroke="#f0b429" stroke-width="9" stroke-linecap="round" marker-end="url(#aa)"/>
+  <!-- terminal prompt -->
+  <path d="M50 56 L64 64 L50 72" fill="none" stroke="#edf2f9" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M70 71 H82" fill="none" stroke="#edf2f9" stroke-width="7.5" stroke-linecap="round"/>
+</svg>

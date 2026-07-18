@@ -1,16 +1,31 @@
-# hccs — Chuyển account Claude Code
+<div align="center">
+  <img src="docs/assets/logo.svg" alt="hccs logo" width="96">
+
+# hccs
+
+**Switch account Claude Code tức thì. Biết chính xác mỗi account tốn bao nhiêu.**
+
+CLI mỏng bọc quanh [`claude`](https://claude.com/claude-code) — dùng chung một `~/.claude` (history, agents, skills, hooks), login tách riêng, kèm **dashboard usage & cost** per-account chạy local.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-8b5cf6)
+![Dependencies](https://img.shields.io/badge/runtime%20deps-none-10b981)
 
 [English](README.md) | **Tiếng Việt**
 
-CLI mỏng bọc quanh [`claude`](https://claude.com/claude-code) cho phép **switch nhiều account Claude Code mà không cần đăng nhập lại**, kèm **dashboard usage & cost** local với attribution chính xác theo từng account.
+</div>
 
 ```sh
 hccs work --resume        # chạy claude dưới account "work", passthrough mọi flag
-hccs personal -p "hi"     # account "personal"
+hccs personal -p "hi"     # account "personal" — không cần login lại
 hccs dashboard            # usage & chi phí per-account, mở trong browser
 ```
 
-`hccs <account> [args...]` tương đương `claude [args...]` — `--resume`, `-c`, `-p`, mọi thứ đều dùng được — chỉ khác là chạy dưới account đã chọn.
+- 🔁 **Switch tức thì** — mỗi account login một lần, sau đó `hccs <account>` là chạy
+- 🧰 **Passthrough đầy đủ** — `hccs <account> [args...]` ≡ `claude [args...]` (`--resume`, `-c`, `-p`, ...)
+- 🤝 **Share mọi thứ trừ auth** — agents, skills, hooks, settings, lịch sử session
+- 📊 **Trace chi phí chuẩn** — attribution per-account, đúng cả khi `--resume` chéo account
+- 🧹 **Gỡ sạch** — setup Claude mặc định không bao giờ bị đụng
 
 ![hccs dashboard](docs/assets/dashboard-dark.png)
 
@@ -38,12 +53,19 @@ Claude Code hỗ trợ biến môi trường `CLAUDE_CONFIG_DIR`. Khi set, Claud
 
 ## Cài đặt
 
+**Qua npm:**
+
 ```sh
-git clone <repo-này> && cd <thư-mục-repo>
-./install.sh
+npm install -g hccs
+hccs setup-hook      # đăng ký hook attribution cho dashboard (một lần)
 ```
 
-Cài `hccs` vào `~/.local/bin`, đăng ký hook attribution cho dashboard, thêm dòng PATH nếu cần. Mở terminal mới sau khi cài.
+**Từ source:**
+
+```sh
+git clone <repo-này> && cd <thư-mục-repo>
+./install.sh         # cài vào ~/.local/bin + tự đăng ký hook
+```
 
 **Yêu cầu:** macOS hoặc Linux, `claude` trong PATH, `python3`.
 Ubuntu/Debian nếu thiếu: `sudo apt install python3`.
