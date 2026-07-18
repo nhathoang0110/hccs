@@ -4,6 +4,14 @@
   "description": "Switch between multiple Claude Code accounts without re-authenticating, with a per-account usage & cost dashboard",
   "license": "MIT",
   "author": "hoangnn",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nhathoang0110/hccs.git"
+  },
+  "homepage": "https://github.com/nhathoang0110/hccs#readme",
+  "bugs": {
+    "url": "https://github.com/nhathoang0110/hccs/issues"
+  },
   "os": ["darwin", "linux"],
   "bin": {
     "hccs": "./hccs",
