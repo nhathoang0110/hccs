@@ -57,7 +57,7 @@ Claude Code supports the `CLAUDE_CONFIG_DIR` environment variable. When set, Cla
 **Via npm:**
 
 ```sh
-npm install -g hccs
+npm install -g @hoangnn23/hccs
 hccs setup-hook      # register the dashboard attribution hook (once)
 ```
 

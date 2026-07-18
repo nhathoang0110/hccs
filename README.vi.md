@@ -57,7 +57,7 @@ Claude Code hỗ trợ biến môi trường `CLAUDE_CONFIG_DIR`. Khi set, Claud
 **Qua npm:**
 
 ```sh
-npm install -g hccs
+npm install -g @hoangnn23/hccs
 hccs setup-hook      # đăng ký hook attribution cho dashboard (một lần)
 ```
 

@@ -1,5 +1,5 @@
 {
-  "name": "hccs",
+  "name": "@hoangnn23/hccs",
   "version": "1.0.0",
   "description": "Switch between multiple Claude Code accounts without re-authenticating, with a per-account usage & cost dashboard",
   "license": "MIT",

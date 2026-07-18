@@ -240,7 +240,7 @@ cmd_setup_hook() {
   local hook_bin
   hook_bin="$(command -v hccs-attribution-hook || true)"
   [ -n "$hook_bin" ] || hook_bin="$HOME/.local/bin/hccs-attribution-hook"
-  [ -x "$hook_bin" ] || die "hccs-attribution-hook not found — run ./install.sh (or npm i -g hccs) again"
+  [ -x "$hook_bin" ] || die "hccs-attribution-hook not found — run ./install.sh (or npm i -g @hoangnn23/hccs) again"
   mkdir -p "$HCCS_CLAUDE_DIR"
   # Back up settings.json ONCE (before the first edit) so uninstall can be audited.
   if [ -f "$settings" ] && ! ls "$HCCS_HOME/backup"/settings.json.* >/dev/null 2>&1; then
@@ -359,7 +359,7 @@ cmd_dashboard() {
   for engine in "$self_dir/hccs-dashboard.py" "$HOME/.local/share/hccs/hccs-dashboard.py"; do
     [ -f "$engine" ] && exec python3 "$engine" serve "$@"
   done
-  die "dashboard is not installed — run ./install.sh (or npm i -g hccs) again"
+  die "dashboard is not installed — run ./install.sh (or npm i -g @hoangnn23/hccs) again"
 }
 
 cmd_uninstall() {
