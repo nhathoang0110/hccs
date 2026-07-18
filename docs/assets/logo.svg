@@ -1,21 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1c2740"/>
-      <stop offset="1" stop-color="#0e131b"/>
+      <stop offset="0" stop-color="#26334f"/>
+      <stop offset=".55" stop-color="#141b28"/>
+      <stop offset="1" stop-color="#0c1118"/>
     </linearGradient>
-    <marker id="ab" markerUnits="userSpaceOnUse" markerWidth="20" markerHeight="20" refX="9" refY="10" orient="auto">
-      <path d="M2 3 L18 10 L2 17 z" fill="#4c9aff"/>
-    </marker>
-    <marker id="aa" markerUnits="userSpaceOnUse" markerWidth="20" markerHeight="20" refX="9" refY="10" orient="auto">
-      <path d="M2 3 L18 10 L2 17 z" fill="#f0b429"/>
-    </marker>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7dd3fc"/>
+      <stop offset="1" stop-color="#3b82f6"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="1" y1="0" x2="0" y2="0">
+      <stop offset="0" stop-color="#fbbf24"/>
+      <stop offset="1" stop-color="#f97316"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="0" stdDeviation="2.2" flood-color="#7dd3fc" flood-opacity=".55"/>
+    </filter>
   </defs>
-  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bg)" stroke="#33415c" stroke-width="2"/>
-  <!-- account swap: two arcs cycling -->
-  <path d="M40 47 A30 30 0 0 1 86 45" fill="none" stroke="#4c9aff" stroke-width="9" stroke-linecap="round" marker-end="url(#ab)"/>
-  <path d="M88 81 A30 30 0 0 1 42 83" fill="none" stroke="#f0b429" stroke-width="9" stroke-linecap="round" marker-end="url(#aa)"/>
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#bg)"/>
+  <rect x="5" y="5" width="118" height="118" rx="29" fill="none" stroke="#ffffff" stroke-opacity=".08" stroke-width="2"/>
+  <ellipse cx="44" cy="30" rx="52" ry="30" fill="#ffffff" opacity=".05"/>
+  <!-- account swap orbit: blue up, amber down -->
+  <path d="M36 46 A33 33 0 0 1 88 42" fill="none" stroke="url(#blue)" stroke-width="9" stroke-linecap="round"/>
+  <path d="M88.5 29.5 L93.5 44.5 L77.5 42 z" fill="#3b82f6"/>
+  <path d="M92 82 A33 33 0 0 1 40 86" fill="none" stroke="url(#amber)" stroke-width="9" stroke-linecap="round"/>
+  <path d="M39.5 98.5 L34.5 83.5 L50.5 86 z" fill="#f97316"/>
   <!-- terminal prompt -->
-  <path d="M50 56 L64 64 L50 72" fill="none" stroke="#edf2f9" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M70 71 H82" fill="none" stroke="#edf2f9" stroke-width="7.5" stroke-linecap="round"/>
+  <g filter="url(#glow)">
+    <path d="M49 55 L64 64 L49 73" fill="none" stroke="#f2f7ff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M69 72 H82" fill="none" stroke="#f2f7ff" stroke-width="8" stroke-linecap="round"/>
+  </g>
 </svg>
