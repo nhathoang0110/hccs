@@ -408,11 +408,30 @@ function renderChart(d) {
   });
 }
 
+// A provider account authenticates with an API key, so "logged in" is the wrong
+// word for it and its identity is the preset, not an email address.
+function credBadge(a, okText, noText) {
+  if (a.logged_in === null || a.logged_in === undefined) return "";
+  if (a.kind === "provider") {
+    return a.logged_in ? '<span class="badge ok">● token set</span>'
+                       : '<span class="badge warn">○ no token</span>';
+  }
+  return a.logged_in ? '<span class="badge ok">● ' + okText + "</span>"
+                     : '<span class="badge warn">○ ' + noText + "</span>";
+}
+
+function identityOf(a) {
+  if (a.kind === "provider") return (a.provider || "provider") + " · api key";
+  return a.email || "—";
+}
+
 function renderCards(d) {
-  var kindLabel = { hccs: "hccs", default: "default claude", other: "other source", removed: "removed" };
+  var kindLabel = { hccs: "hccs", provider: "provider", default: "default claude", other: "other source", removed: "removed" };
   $("cards").innerHTML = d.accounts.map(function (a) {
-    var cred = a.logged_in === true ? '<span class="badge ok">● logged in</span>'
-             : a.logged_in === false ? '<span class="badge warn">○ not logged in</span>' : "";
+    var cred = credBadge(a, "logged in", "not logged in");
+    // An OAuth login inside a provider account is undocumented territory in
+    // Claude Code — flag it instead of quietly showing a healthy card.
+    if (a.oauth_mixed) cred += '<span class="badge warn">⚠ oauth mixed</span>';
     var rows = [["Today", a.today], ["7 days", a.d7], ["30 days", a.d30], ["All time", a.all]]
       .map(function (kv) {
         var b = kv[1];
@@ -422,7 +441,7 @@ function renderCards(d) {
     return '<div class="card" style="--acc-color:' + (COLORS[a.name] || "var(--border)") + '">' +
       '<div class="head"><span class="name">' + esc(a.name) + '</span>' +
       '<span class="badge">' + (kindLabel[a.kind] || esc(a.kind)) + "</span>" + cred + "</div>" +
-      '<div class="email">' + esc(a.email || "—") + "</div>" +
+      '<div class="email">' + esc(identityOf(a)) + "</div>" +
       "<table>" + rows + "</table>" +
       '<div class="last">' + (a.last_used ? "last used: " + a.last_used : "no usage yet") + "</div></div>";
   }).join("");
@@ -440,14 +459,17 @@ function renderModels(d) {
 }
 
 function renderAuth(d) {
-  var accs = d.accounts.filter(function (a) { return a.kind === "hccs" || a.kind === "default"; });
+  var accs = d.accounts.filter(function (a) {
+    return a.kind === "hccs" || a.kind === "provider" || a.kind === "default";
+  });
   $("auth").innerHTML = accs.map(function (a) {
-    var cred = a.logged_in === true ? '<span class="badge ok">● OK</span>'
-             : '<span class="badge warn">○ not logged in</span>';
+    var cred = credBadge(a, "OK", "not logged in");
+    if (a.oauth_mixed) cred += '<span class="badge warn">⚠ oauth mixed</span>';
     var cmd = a.kind === "default" ? "claude /login"
+            : a.kind === "provider" ? (a.logged_in ? "hccs " + a.name : "hccs add-token " + a.name)
             : a.logged_in ? "hccs " + a.name : "hccs add " + a.name;
     return '<tr><td style="font-family:var(--mono);font-weight:600">' + esc(a.name) + "</td>" +
-      "<td>" + esc(a.email || "—") + "</td><td>" + cred + "</td>" +
+      "<td>" + esc(identityOf(a)) + "</td><td>" + cred + "</td>" +
       '<td><span class="cli">' + esc(cmd) + '</span><button class="copy" data-cmd="' + esc(cmd) +
       '" aria-label="Copy command ' + esc(cmd) + '">copy</button></td></tr>';
   }).join("");

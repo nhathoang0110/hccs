@@ -34,6 +34,10 @@ hccs — switch Claude Code accounts without re-login
 Usage:
   hccs <account> [claude args...]   Run claude as <account> (all flags pass through)
   hccs add <account> [claude args]  Create a new account and log in once
+  hccs add <account> --provider <preset> [claude args]
+                                    Create an API-key account for a provider
+  hccs add-token <account>          Store/replace a provider account's API key
+  hccs refresh-preset <account>     Re-apply the built-in preset (keeps the key)
   hccs list                         List accounts and emails
   hccs which                        Show the most recently used account
   hccs remove <account>             Delete an account (config + credentials)
@@ -42,10 +46,17 @@ Usage:
   hccs uninstall                    Remove hccs completely (default Claude untouched)
   hccs -h | --help                  Show this help
 
+Provider presets: glm
+  `hccs glm` creates the account on first use and asks for the API key once.
+  Everything except auth is still shared with your other accounts.
+  To pass --provider through to claude instead, put it after --.
+
 Examples:
   hccs add work
   hccs work --resume
   hccs personal -p "hello"
+  hccs glm                          # first run asks for the z.ai API key
+  hccs add myglm --provider glm
 EOF
 }
 
@@ -73,15 +84,19 @@ validate_name() {
   local acc="$1"
   case "$acc" in
     ""|.|..) die "invalid account name: '$acc'" ;;
-    add|list|which|remove|uninstall|dashboard|setup-hook) die "'$acc' collides with an hccs command — pick another name" ;;
+    add|add-token|refresh-preset|list|which|remove|uninstall|dashboard|setup-hook) die "'$acc' collides with an hccs command — pick another name" ;;
   esac
   [[ "$acc" =~ ^[A-Za-z0-9_.-]+$ ]] || die "account name may only contain [A-Za-z0-9_.-]: '$acc'"
 }
 
+# True only when /dev/tty can actually be opened. It can exist but be unusable
+# (detached process, some CI runners), and `[ -e /dev/tty ]` does not catch that.
+have_tty() { { : >/dev/tty; } 2>/dev/null; }
+
 # y/N confirmation. Non-interactive (no TTY) defaults to NO.
 confirm() {
   local prompt="$1" reply
-  [ -e /dev/tty ] || return 1
+  have_tty || return 1
   printf '%s [y/N] ' "$prompt" >/dev/tty
   read -r reply </dev/tty || return 1
   case "$reply" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
@@ -120,6 +135,342 @@ sed_inplace() {  # $1 = expr, $2 = file
   fi
 }
 
+# ── Provider accounts ───────────────────────────────────────────────────────
+# A "provider account" runs Claude Code against an Anthropic-compatible endpoint
+# (e.g. z.ai/GLM) with an API key instead of an Anthropic OAuth login. It reuses
+# the same CLAUDE_CONFIG_DIR mechanism as a normal account; only two things are
+# different:
+#   - settings.json is a REAL file composed by hccs (shared settings + provider
+#     env overlay), because a settings `env` block overrides the process env.
+#   - the API key is injected as ANTHROPIC_AUTH_TOKEN at exec time and is never
+#     written into settings.json.
+
+# Bump whenever a preset below changes, so existing accounts can detect drift.
+HCCS_PRESET_VERSION=1
+
+# Env for a preset, one KEY=VALUE per line.
+# ANTHROPIC_AUTH_TOKEN is deliberately absent: the token travels through the
+# process env at exec time. Putting it here would both override that and leave
+# the secret on disk.
+preset_env() {
+  case "$1" in
+    glm)
+      cat <<'EOF'
+ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
+ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.7
+ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2[1m]
+ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2[1m]
+ANTHROPIC_DEFAULT_FABLE_MODEL=glm-5.2[1m]
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+API_TIMEOUT_MS=3000000
+EOF
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+preset_exists() { preset_env "$1" >/dev/null 2>&1; }
+preset_names()  { printf 'glm'; }
+
+# True when the account dir is a provider account. The marker MUST be a real
+# file: every entry of ~/.claude is symlinked in (dotglob), so a same-named file
+# planted there must never be able to promote an OAuth account into a provider
+# one — that would let it dictate ANTHROPIC_BASE_URL for a real Anthropic token.
+is_provider() { [ -f "$1/.hccs-provider.json" ] && [ ! -L "$1/.hccs-provider.json" ]; }
+
+# Preset name recorded in the marker ("" when absent/unreadable).
+provider_of() {
+  python3 - "$1/.hccs-provider.json" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("provider") or "")
+except Exception:
+    print("")
+PY
+}
+
+# [macOS] Keychain slot for a provider token. Hashed on the CONFIG DIR — same
+# convention as slot_name() — so two HCCS_HOME trees never share a slot and a
+# scratch-home test can never delete the real account's key.
+provider_slot() {
+  printf 'hccs-provider-%s' "$(printf '%s' "$1" | shasum -a 256 | cut -c1-8)"
+}
+
+# Trim CR/whitespace and reject anything outside the API-key charset. The token
+# is handed to `security -i`, whose quoting rules for backslashes and quotes are
+# unspecified; refusing an exotic key beats storing a silently mangled one.
+sanitize_token() {  # $1 = raw token; prints the cleaned token
+  local t="$1"
+  t="${t%$'\r'}"
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  if [ -z "$t" ]; then
+    warn "empty token"
+    return 1
+  fi
+  case "$t" in
+    *[!A-Za-z0-9._~+/=-]*)
+      warn "token has unsupported characters (allowed: A-Za-z0-9 and . _ ~ + / = -)"
+      return 1 ;;
+  esac
+  printf '%s' "$t"
+}
+
+# Read the stored token to stdout; return 1 when there is none.
+read_token() {  # $1 = cfgdir
+  if [ "$HCCS_OS" = "Darwin" ]; then
+    security find-generic-password -a "$USER" -s "$(provider_slot "$1")" -w 2>/dev/null
+  else
+    [ -f "$1/.provider-token" ] || return 1
+    cat "$1/.provider-token"
+  fi
+}
+
+# Is a token stored? Metadata only — never pulls the secret out just to test it.
+has_token() {  # $1 = cfgdir
+  if [ "$HCCS_OS" = "Darwin" ]; then
+    security find-generic-password -a "$USER" -s "$(provider_slot "$1")" >/dev/null 2>&1
+  else
+    [ -f "$1/.provider-token" ]
+  fi
+}
+
+# Slots this hccs tree has ever written. The slot name is a hash of the config
+# dir, so once that dir is gone the name is unrecoverable — uninstall would leave
+# the key in the Keychain forever. Recording it keeps cleanup scoped to this
+# HCCS_HOME instead of deleting every hccs-provider-* item on the machine.
+remember_slot() {  # $1 = cfgdir
+  [ "$HCCS_OS" = "Darwin" ] || return 0
+  local reg="$HCCS_HOME/provider-slots" slot
+  slot="$(provider_slot "$1")"
+  mkdir -p "$HCCS_HOME"
+  grep -qxF "$slot" "$reg" 2>/dev/null && return 0
+  printf '%s\n' "$slot" >>"$reg"
+  return 0
+}
+
+# Store the token. macOS: `security -i` reads the command from stdin, so the
+# secret never appears in argv (where `ps` would show it). Linux: mode-600 file.
+# Always read back and compare — a truncated secret would otherwise surface much
+# later as an unexplained 401.
+store_token() {  # $1 = cfgdir, $2 = token
+  local cfg="$1" tok="$2" back
+  if [ "$HCCS_OS" = "Darwin" ]; then
+    printf 'add-generic-password -U -a "%s" -s "%s" -w "%s"\n' \
+      "$USER" "$(provider_slot "$cfg")" "$tok" | security -i >/dev/null 2>&1 \
+      || die "could not write the token to the Keychain"
+  else
+    ( umask 077; printf '%s' "$tok" >"$cfg/.provider-token" ) \
+      || die "could not write $cfg/.provider-token"
+    # umask only applies to a file being created; an existing one keeps its mode.
+    chmod 600 "$cfg/.provider-token" 2>/dev/null || true
+  fi
+  back="$(read_token "$cfg" 2>/dev/null || true)"
+  if [ "$back" != "$tok" ]; then
+    die "token read-back mismatch — refusing to keep a corrupted credential"
+  fi
+  remember_slot "$cfg"
+}
+
+# Best-effort removal of a provider token. Never fatal (called from uninstall).
+forget_provider_token() {  # $1 = cfgdir
+  if [ "$HCCS_OS" = "Darwin" ]; then
+    security delete-generic-password -a "$USER" -s "$(provider_slot "$1")" >/dev/null 2>&1 \
+      || return 1
+    return 0
+  fi
+  rm -f "$1/.provider-token" 2>/dev/null || true
+  return 0
+}
+
+# Read a token from the terminal without echoing it.
+prompt_token() {  # $1 = account name; prints the cleaned token
+  local raw
+  have_tty || die "no usable TTY to read the token from — run hccs in an interactive shell"
+  printf 'Paste the API key for account %s (input hidden): ' "$1" >/dev/tty
+  IFS= read -rs raw </dev/tty || { printf '\n' >/dev/tty; die "aborted"; }
+  printf '\n' >/dev/tty
+  sanitize_token "$raw"
+}
+
+# Write the marker: a snapshot of the preset env, so upgrading a preset never
+# silently changes an account that already works. Atomic.
+write_provider_marker() {  # $1 = cfgdir, $2 = preset
+  preset_env "$2" | python3 -c '
+import json, os, sys, tempfile
+path, preset, version = sys.argv[1], sys.argv[2], int(sys.argv[3])
+env = {}
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if line and "=" in line:
+        k, v = line.split("=", 1)
+        env[k] = v
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".hccs-provider.")
+with os.fdopen(fd, "w") as f:
+    json.dump({"provider": preset, "preset_version": version, "env": env}, f, indent=2)
+    f.write("\n")
+os.replace(tmp, path)
+' "$1/.hccs-provider.json" "$2" "$HCCS_PRESET_VERSION"
+}
+
+# True when the account dir carries an Anthropic OAuth identity. A provider
+# account must not: Claude Code documents how ANTHROPIC_API_KEY interacts with a
+# stored subscription login, but not ANTHROPIC_AUTH_TOKEN, so the combination is
+# undefined behaviour we warn about rather than rely on.
+# Either half counts: the identity block in .claude.json, or an actual stored
+# credential. Only the credential is what Claude Code would authenticate with,
+# but the identity block means someone logged in here at some point — both are
+# symptoms of the same mistake, so flag either.
+has_oauth() {  # $1 = cfgdir
+  if python3 - "$1/.claude.json" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(d, dict) and d.get("oauthAccount") else 1)
+PY
+  then
+    return 0
+  fi
+  if [ "$HCCS_OS" = "Darwin" ]; then
+    if security find-generic-password -a "$USER" -s "$(slot_name "$1")" >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
+  [ -f "$1/.credentials.json" ]
+}
+
+# Endpoint an account points at, for messages ("" when unknown).
+provider_base_url() {  # $1 = cfgdir
+  python3 - "$1/.hccs-provider.json" <<'PY'
+import json, sys
+try:
+    print((json.load(open(sys.argv[1])).get("env") or {}).get("ANTHROPIC_BASE_URL") or "")
+except Exception:
+    print("")
+PY
+}
+
+# Warn when the marker was written by an older preset. Values are snapshotted at
+# creation on purpose (an upgrade must not silently change a working account),
+# so the fix is opt-in via `hccs refresh-preset`.
+check_preset_drift() {  # $1 = cfgdir, $2 = account
+  local v
+  v="$(python3 - "$1/.hccs-provider.json" <<'PY'
+import json, sys
+try:
+    print(int(json.load(open(sys.argv[1])).get("preset_version") or 0))
+except Exception:
+    print(0)
+PY
+)"
+  if [ "$v" != "$HCCS_PRESET_VERSION" ]; then
+    warn "account '$2' was created with preset version $v (current: $HCCS_PRESET_VERSION) — run: hccs refresh-preset $2"
+  fi
+  return 0
+}
+
+# Project/local settings outrank the account's own settings.json in Claude Code's
+# precedence order, so a repo can capture ANTHROPIC_BASE_URL while hccs still
+# exports the provider token. hccs cannot override that — only point it out.
+warn_if_project_env_override() {
+  local d f
+  # Claude Code picks up project settings from the workspace root, so checking
+  # $PWD alone would miss an override when run from a subdirectory.
+  d="$PWD"
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    for f in "$d/.claude/settings.json" "$d/.claude/settings.local.json"; do
+      [ -f "$f" ] || continue
+      if python3 - "$f" <<'PY'
+import json, sys
+try:
+    env = (json.load(open(sys.argv[1])) or {}).get("env") or {}
+except Exception:
+    sys.exit(1)
+sys.exit(0 if any(k.startswith("ANTHROPIC_") for k in env) else 1)
+PY
+      then
+        warn "${f/#$HOME/\~} sets ANTHROPIC_* and outranks this account's settings — the provider token may be sent somewhere unexpected"
+      fi
+    done
+    [ -d "$d/.git" ] && break
+    d="$(dirname "$d")"
+  done
+  return 0
+}
+
+# Shown once per provider account. Both facts are inherent to the design and
+# cannot be engineered away, so the user gets told rather than surprised.
+warn_once_provider_disclosure() {  # $1 = cfgdir, $2 = account
+  local flag="$1/.hccs-disclosed" host
+  [ -e "$flag" ] && return 0
+  host="$(provider_base_url "$1")"
+  cat >&2 <<EOF
+hccs: '$2' is a provider account — Claude Code will talk to ${host:-the provider}, not Anthropic.
+      · Session history is shared with your other accounts: resuming an Anthropic
+        session here replays its full transcript to that endpoint.
+      · The API key lives in the environment of claude and every process it starts
+        (hooks, plugins, MCP servers, statusline, and the model's own Bash tool).
+      This notice is shown once per account.
+EOF
+  : >"$flag" 2>/dev/null || true
+  return 0
+}
+
+# Replace this process with claude, after scrubbing inherited ANTHROPIC_* state.
+# hccs is often launched from inside a Claude session, which injects the calling
+# account's settings `env` into its children — without scrubbing, an OAuth
+# account started from a provider session would inherit the provider's base URL
+# and send a real Anthropic token there.
+#
+# The token is exported (not passed as `env VAR=value`) so it never lands in the
+# argv of any process, where `ps` would show it.
+# Every variable any preset can set, plus the auth/model keys a session could
+# carry. Derived from the presets themselves so adding a key to a preset can
+# never silently create a new leak path.
+provider_env_keys() {
+  local p
+  for p in $(preset_names); do
+    preset_env "$p" | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'
+  done
+  printf '%s\n' ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL \
+                CLAUDE_CODE_SUBAGENT_MODEL
+}
+
+exec_claude() {  # $1 = cfgdir, $2 = provider|oauth, $3 = token ("" for oauth), rest = claude args
+  local cfg="$1" kind="$2" tok="${3:-}"; shift 3
+  local -a scrub=(); local v
+  # An OAuth account only needs scrubbing when the surrounding session is itself
+  # a provider one (that is where a foreign ANTHROPIC_BASE_URL comes from).
+  # Scrubbing unconditionally would silently drop a base URL or timeout the user
+  # deliberately exported in their shell profile.
+  if [ "$kind" = "provider" ] || [ -n "${HCCS_PROVIDER_SESSION:-}" ]; then
+    for v in $(provider_env_keys | sort -u); do
+      # we re-export the token ourselves below, so don't scrub it away first
+      if [ "$kind" = "provider" ] && [ "$v" = "ANTHROPIC_AUTH_TOKEN" ]; then continue; fi
+      scrub+=(-u "$v")
+    done
+  else
+    # A stray token from anywhere else is never wanted on an OAuth account.
+    scrub+=(-u ANTHROPIC_AUTH_TOKEN)
+  fi
+  export CLAUDE_CONFIG_DIR="$cfg"
+  if [ "$kind" = "provider" ]; then
+    # A provider endpoint must never receive a real Anthropic key. An OAuth
+    # account may legitimately want one, so it is only scrubbed here.
+    scrub+=(-u ANTHROPIC_API_KEY)
+    export ANTHROPIC_AUTH_TOKEN="$tok"
+    # Marks the session so a nested `hccs <oauth-account>` knows to scrub.
+    export HCCS_PROVIDER_SESSION="$cfg"
+  else
+    scrub+=(-u HCCS_PROVIDER_SESSION)
+  fi
+  exec env "${scrub[@]}" claude "$@"
+}
+
 # Sync symlinks: link every entry of ~/.claude into the account dir, except the
 # auth files. Idempotent — runs on every switch so newly added entries in
 # ~/.claude are picked up automatically.
@@ -136,6 +487,15 @@ sync_links() {
     name="$(basename "$target")"
     case "$name" in
       .claude.json | .credentials.json) continue ;; # per-account, never shared
+      # Provider state is per-account too. Excluding it also stops a file of the
+      # same name planted in ~/.claude from being linked in and taking over the
+      # account (it would get to dictate ANTHROPIC_BASE_URL / the token).
+      .hccs-provider.json | .provider-token | .hccs-provider.pending | .hccs-disclosed) continue ;;
+      # A provider account owns a REAL settings.json (see compose_settings).
+      # This must come before the [ -L ] fast path below, otherwise a stale
+      # symlink would survive and never be replaced.
+      settings.json)
+        if is_provider "$cfg"; then continue; fi ;;
     esac
     link="$cfg/$name"
     [ -L "$link" ] && continue                        # symlink already there → skip
@@ -146,6 +506,105 @@ sync_links() {
     ln -s "$target" "$link"
   done
   shopt -u nullglob dotglob
+  return 0
+}
+
+# Compose a provider account's settings.json: shared settings + the provider env
+# overlay. Runs on every switch, so edits to the shared file keep flowing in.
+#
+# Auth keys are stripped from the composed env on purpose: a settings `env` entry
+# outranks the process env, so leaving them here would block the token hccs
+# injects at exec time — and would write the secret to disk.
+#
+# Never writes to $HCCS_CLAUDE_DIR. Replaces a symlink instead of writing through
+# it, and skips the write entirely when the content would not change (Claude Code
+# reloads settings on change; a needless rewrite can drop permission grants made
+# in a session that is still running).
+compose_settings() {  # $1 = cfgdir
+  python3 - "$HCCS_CLAUDE_DIR/settings.json" "$1/.hccs-provider.json" "$1/settings.json" <<'PY'
+import json, os, sys, tempfile
+
+shared_path, marker_path, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+
+try:
+    with open(shared_path) as f:
+        shared = json.load(f)
+    if not isinstance(shared, dict):
+        raise ValueError("not an object")
+except FileNotFoundError:
+    shared = {}
+except Exception as e:
+    print("hccs: %s is unreadable (%s) — composing without it" % (shared_path, e),
+          file=sys.stderr)
+    shared = {}
+
+try:
+    with open(marker_path) as f:
+        prov = (json.load(f) or {}).get("env") or {}
+except Exception as e:
+    print("hccs: cannot read %s: %s" % (marker_path, e), file=sys.stderr)
+    sys.exit(1)
+
+out = dict(shared)
+env = dict(out.get("env") or {})
+env.update(prov)
+env.pop("ANTHROPIC_AUTH_TOKEN", None)
+env.pop("ANTHROPIC_API_KEY", None)
+out["env"] = env
+
+# Settings-level credential sources would authenticate against the provider
+# endpoint with an Anthropic credential, and apiKeyHelper's output is sent as
+# both X-Api-Key and Authorization — it would also outrank the token hccs
+# injects. None of them belong in a provider account.
+for key in ("apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "forceLoginMethod"):
+    out.pop(key, None)
+
+# A literal Claude model id would be sent verbatim to the provider. Aliases are
+# remapped by the ANTHROPIC_DEFAULT_*_MODEL entries above, so only warn.
+model = out.get("model")
+if isinstance(model, str):
+    base = model.split("[", 1)[0]
+    if base not in ("opus", "sonnet", "haiku", "fable", "opusplan", "default", ""):
+        print("hccs: shared settings pin model %r; a provider account expects an "
+              "alias (opus/sonnet/haiku/fable)" % model, file=sys.stderr)
+
+new = json.dumps(out, indent=2) + "\n"
+if not os.path.islink(dest):
+    try:
+        with open(dest) as f:
+            if f.read() == new:
+                sys.exit(0)          # unchanged → leave the file (and its mtime) alone
+    except Exception:
+        pass
+
+if os.path.islink(dest):
+    os.unlink(dest)                  # never write through the shared symlink
+
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest) or ".", prefix=".settings.")
+with os.fdopen(fd, "w") as f:
+    f.write(new)
+os.replace(tmp, dest)
+PY
+}
+
+# Refuse to exec if the composed settings are not actually in place: without
+# ANTHROPIC_BASE_URL the provider token would be sent to api.anthropic.com.
+assert_provider_settings() {  # $1 = cfgdir
+  python3 - "$1/settings.json" "$1/.hccs-provider.json" <<'PY'
+import json, os, sys
+dest, marker = sys.argv[1], sys.argv[2]
+if os.path.islink(dest) or not os.path.isfile(dest):
+    print("hccs: %s is not a real file" % dest, file=sys.stderr); sys.exit(1)
+try:
+    got = (json.load(open(dest)).get("env") or {}).get("ANTHROPIC_BASE_URL")
+    want = (json.load(open(marker)).get("env") or {}).get("ANTHROPIC_BASE_URL")
+except Exception as e:
+    print("hccs: cannot verify provider settings: %s" % e, file=sys.stderr); sys.exit(1)
+if not want or got != want:
+    print("hccs: composed settings do not match the provider marker "
+          "(base URL %r vs %r)" % (got, want), file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 # Seed .claude.json for a new account: copy ~/.claude.json minus the identity
@@ -292,11 +751,61 @@ cmd_switch() {
   shift
   command -v claude >/dev/null 2>&1 || die "'claude' not found in PATH"
   local cfg; cfg="$(cfgdir_for "$acc")"
-  [ -d "$cfg" ] || die "account '$acc' does not exist. Run: hccs add $acc"
+
+  if [ ! -d "$cfg" ]; then
+    # A name that matches a built-in preset creates the account on the spot.
+    # Anything else keeps the old behaviour, so a typo is still an error.
+    if preset_exists "$acc"; then
+      cmd_add "$acc" --provider "$acc" "$@"
+      return 0
+    fi
+    die "account '$acc' does not exist. Run: hccs add $acc"
+  fi
+
+  # An intent file left behind by an interrupted `hccs add --provider` means the
+  # directory is a half-built provider account. Falling through would hand it to
+  # Claude Code as a blank OAuth config dir and prompt for an Anthropic login
+  # inside what the user believes is a provider account.
+  if ! is_provider "$cfg" && [ -f "$cfg/.hccs-provider.pending" ]; then
+    local pending; pending="$(cat "$cfg/.hccs-provider.pending" 2>/dev/null || true)"
+    preset_exists "$pending" || die "account '$acc' is half-built with unknown preset '$pending' — remove it with: hccs remove $acc"
+    warn "account '$acc' is an unfinished provider setup (preset: $pending)"
+    if confirm "Finish setting it up now?"; then
+      local tok; tok="$(prompt_token "$acc")" || die "no token provided"
+      write_provider_marker "$cfg" "$pending" || die "could not write the provider marker"
+      store_token "$cfg" "$tok"
+      rm -f "$cfg/.hccs-provider.pending"
+    else
+      die "leaving '$acc' as is — remove it with: hccs remove $acc"
+    fi
+  fi
+
+  local tok=""
+  if is_provider "$cfg"; then
+    # Everything that can fail happens before anything is mutated: a missing
+    # token must not leave the account pointing at the provider, and must not
+    # move the "current account" marker either.
+    tok="$(read_token "$cfg" 2>/dev/null || true)"
+    [ -n "$tok" ] || die "no token stored for '$acc'. Run: hccs add-token $acc"
+    if has_oauth "$cfg"; then
+      warn "provider account '$acc' also holds an Anthropic OAuth login — Claude Code's behaviour for that combination is undocumented; consider recreating the account"
+    fi
+    warn_if_project_env_override
+    check_preset_drift "$cfg" "$acc"
+    warn_once_provider_disclosure "$cfg" "$acc"
+  fi
+
   sync_links "$cfg"
+  if is_provider "$cfg"; then
+    compose_settings "$cfg"
+    assert_provider_settings "$cfg" || die "refusing to start: provider settings are not in place"
+  fi
   mkdir -p "$HCCS_HOME"
   printf '%s\n' "$acc" >"$HCCS_HOME/state"
-  CLAUDE_CONFIG_DIR="$cfg" exec claude "$@"
+  if is_provider "$cfg"; then
+    exec_claude "$cfg" provider "$tok" "$@"
+  fi
+  exec_claude "$cfg" oauth "" "$@"
 }
 
 cmd_add() {
@@ -304,16 +813,118 @@ cmd_add() {
   [ -n "$acc" ] || die "account name required: hccs add <account>"
   validate_name "$acc"
   shift
+  # Optional provider preset. Parsed before the rest is handed to claude.
+  local preset=""
+  if [ "${1:-}" = "--provider" ]; then
+    preset="${2:-}"
+    [ -n "$preset" ] || die "--provider needs a preset name (available: $(preset_names))"
+    preset_exists "$preset" || die "unknown preset '$preset' (available: $(preset_names))"
+    shift 2
+  elif preset_exists "$acc"; then
+    preset="$acc"
+  fi
   command -v claude >/dev/null 2>&1 || die "'claude' not found in PATH"
   local cfg; cfg="$(cfgdir_for "$acc")"
   [ -d "$cfg" ] && die "account '$acc' already exists"
+
+  # Ask for the token BEFORE creating anything: Ctrl-C at the prompt must not
+  # leave a half-built account behind.
+  local tok=""
+  if [ -n "$preset" ]; then
+    info "Creating provider account '$acc' (preset: $preset)."
+    tok="$(prompt_token "$acc")" || die "no token provided"
+  fi
+
   mkdir -p "$cfg"
+  # Record the intent before anything else. If the run is interrupted, this file
+  # is what tells a later `hccs <account>` that the directory is an unfinished
+  # provider setup rather than a fresh OAuth account — the account name alone
+  # cannot say so (`hccs add myglm --provider glm` is not a preset name).
+  if [ -n "$preset" ]; then
+    printf '%s' "$preset" >"$cfg/.hccs-provider.pending"
+  fi
+  # Cleanup must survive both signals and `die`. An ERR trap would not fire here:
+  # it is not inherited by shell functions without `set -E`, and `die` exits
+  # rather than failing. An EXIT trap covers every path, and the INT/TERM handler
+  # exits explicitly — without that, bash resumes the function and the following
+  # sync_links would recreate the directory it just deleted.
+  HCCS_ADD_DONE=0
+  # shellcheck disable=SC2064  # $cfg must be expanded now, not at trap time
+  trap "[ \"\$HCCS_ADD_DONE\" = 1 ] || rm -rf '$cfg'" EXIT
+  # shellcheck disable=SC2064
+  trap "[ \"\$HCCS_ADD_DONE\" = 1 ] || rm -rf '$cfg'; exit 130" INT TERM
   seed_config "$cfg"          # copy ~/.claude.json minus oauthAccount/userID (BEFORE sync)
+  if [ -n "$preset" ]; then
+    # Marker first: it is the "this account is complete" sentinel. Storing the
+    # token first could orphan a Keychain item that nothing knows how to find.
+    write_provider_marker "$cfg" "$preset" || die "could not write the provider marker"
+    store_token "$cfg" "$tok"
+    rm -f "$cfg/.hccs-provider.pending"
+  fi
   sync_links "$cfg"
+  if [ -n "$preset" ]; then
+    compose_settings "$cfg"
+    assert_provider_settings "$cfg" || die "provider settings could not be composed"
+  fi
+  HCCS_ADD_DONE=1
+  trap - EXIT INT TERM
+
   mkdir -p "$HCCS_HOME"
   printf '%s\n' "$acc" >"$HCCS_HOME/state"
+  if [ -n "$preset" ]; then
+    warn_once_provider_disclosure "$cfg" "$acc"
+    exec_claude "$cfg" provider "$tok" "$@"
+  fi
   info "Logging in account '$acc' (Claude will prompt; trust/MCP settings carry over from the default account)..."
-  CLAUDE_CONFIG_DIR="$cfg" exec claude "$@"
+  exec_claude "$cfg" oauth "" "$@"
+}
+
+# Store or replace the API key of an existing provider account, without touching
+# anything else. The recovery path when a key is rotated, revoked, or lost.
+cmd_add_token() {
+  local acc="${1:-}"
+  [ -n "$acc" ] || die "account name required: hccs add-token <account>"
+  validate_name "$acc"
+  local cfg; cfg="$(cfgdir_for "$acc")"
+  [ -d "$cfg" ] || die "account '$acc' does not exist"
+  is_provider "$cfg" || die "'$acc' is not a provider account"
+  local tok; tok="$(prompt_token "$acc")" || die "no token provided"
+  store_token "$cfg" "$tok"
+  info "token stored for '$acc'"
+}
+
+# Rewrite the marker from the current built-in preset, keeping the token. Lets a
+# fixed preset reach accounts that already exist, without recreating them.
+cmd_refresh_preset() {
+  local acc="${1:-}"
+  [ -n "$acc" ] || die "account name required: hccs refresh-preset <account>"
+  validate_name "$acc"
+  local cfg; cfg="$(cfgdir_for "$acc")"
+  [ -d "$cfg" ] || die "account '$acc' does not exist"
+  is_provider "$cfg" || die "'$acc' is not a provider account"
+  local preset; preset="$(provider_of "$cfg")"
+  preset_exists "$preset" || die "account '$acc' uses preset '$preset', which no longer exists"
+  write_provider_marker "$cfg" "$preset"
+  compose_settings "$cfg"
+  info "preset '$preset' refreshed for '$acc' (token kept)"
+}
+
+# What to show next to an account name. A provider account has no oauthAccount,
+# so email_of() alone would render it as "(not logged in)".
+account_label() {  # $1 = cfgdir
+  if is_provider "$1"; then
+    if has_token "$1"; then
+      printf '(provider: %s, token set)' "$(provider_of "$1")"
+    else
+      printf '(provider: %s, NO TOKEN)' "$(provider_of "$1")"
+    fi
+    return 0
+  fi
+  if [ -f "$1/.hccs-provider.pending" ]; then
+    printf '(unfinished provider setup)'
+    return 0
+  fi
+  email_of "$1"
 }
 
 cmd_list() {
@@ -324,7 +935,7 @@ cmd_list() {
     [ -d "$d" ] || continue
     found=1
     acc="$(basename "$d")"
-    printf '%-20s %s\n' "$acc" "$(email_of "${d%/}")"
+    printf '%-20s %s\n' "$acc" "$(account_label "${d%/}")"
   done
   [ "$found" -eq 1 ] || info "(no accounts yet)"
 }
@@ -333,7 +944,7 @@ cmd_which() {
   local acc
   acc="$(cat "$HCCS_HOME/state" 2>/dev/null || true)"
   [ -n "$acc" ] || { info "(no account switched to yet)"; return 0; }
-  printf '%s  %s\n' "$acc" "$(email_of "$(cfgdir_for "$acc")")"
+  printf '%s  %s\n' "$acc" "$(account_label "$(cfgdir_for "$acc")")"
 }
 
 cmd_remove() {
@@ -343,8 +954,12 @@ cmd_remove() {
   local cfg; cfg="$(cfgdir_for "$acc")"
   [ -d "$cfg" ] || die "account '$acc' does not exist"
   confirm "Delete account '$acc' (config + credentials)?" || { info "aborted."; return 0; }
-  forget_credentials "$cfg" \
-    || warn "no stored credentials found (maybe never logged in) — skipping"
+  # Try both: a provider account can also carry an OAuth login (hccs warns about
+  # that on switch), and only clearing one of the two would orphan the other.
+  local cleared=0
+  forget_provider_token "$cfg" && cleared=1
+  forget_credentials "$cfg" && cleared=1
+  [ "$cleared" -eq 1 ] || warn "no stored credentials found (maybe never logged in) — skipping"
   rm -rf "$cfg"   # Linux: .credentials.json lives inside, removed together
   [ "$(cat "$HCCS_HOME/state" 2>/dev/null || true)" = "$acc" ] && rm -f "$HCCS_HOME/state"
   info "removed '$acc'"
@@ -362,6 +977,23 @@ cmd_dashboard() {
   die "dashboard is not installed — run ./install.sh (or npm i -g @hoangnn23/hccs) again"
 }
 
+# [macOS] Delete every hccs-provider-* Keychain item, including ones whose
+# account dir is already gone. Enumerating the family is the only way to reach
+# those: the slot name is a hash of a config dir that no longer exists.
+# Metadata-only dump, so no password prompt. Best-effort and never fatal — but
+# it says so out loud rather than reporting a clean uninstall it cannot verify.
+sweep_orphan_provider_slots() {
+  [ "$HCCS_OS" = "Darwin" ] || return 0
+  local reg="$HCCS_HOME/provider-slots" slot found=0
+  [ -f "$reg" ] || return 0
+  while IFS= read -r slot; do
+    case "$slot" in hccs-provider-*) ;; *) continue ;; esac
+    security delete-generic-password -a "$USER" -s "$slot" >/dev/null 2>&1 && found=1
+  done <"$reg"
+  [ "$found" -eq 1 ] && info "removed leftover provider API keys from the Keychain"
+  return 0
+}
+
 cmd_uninstall() {
   confirm "Uninstall hccs: delete $HCCS_HOME, the credentials of EVERY hccs account, and the binaries. The default Claude account is NOT affected. Continue?" \
     || { info "aborted."; return 0; }
@@ -373,8 +1005,13 @@ cmd_uninstall() {
     for d in "$HCCS_HOME/accounts"/*/; do
       [ -d "$d" ] || continue
       forget_credentials "${d%/}" || true
+      forget_provider_token "${d%/}" || true
     done
   fi
+  # 1b) [macOS] Provider tokens live outside the account dirs, so a directory
+  #     that was deleted by hand would leave its Keychain item behind with
+  #     nothing left on the machine that knows the slot name. Sweep the family.
+  sweep_orphan_provider_slots
   # 2) remove the SessionStart hook from the REAL settings.json (before the
   #    backup disappears in step 3)
   remove_hook
@@ -403,7 +1040,9 @@ main() {
   esac
   require_platform
   case "$cmd" in
-    add)        shift; cmd_add "$@" ;;
+    add)            shift; cmd_add "$@" ;;
+    add-token)      shift; cmd_add_token "$@" ;;
+    refresh-preset) shift; cmd_refresh_preset "$@" ;;
     list)       shift; cmd_list "$@" ;;
     which)      shift; cmd_which "$@" ;;
     remove)     shift; cmd_remove "$@" ;;

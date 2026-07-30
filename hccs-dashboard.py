@@ -39,8 +39,12 @@ CACHE_VERSION = 1
 PRICING = {
     "claude-fable-5":     (10.0, 50.0, 12.5, 20.0, 1.0),
     "claude-mythos-5":    (10.0, 50.0, 12.5, 20.0, 1.0),
+    "claude-opus-5":      (5.0, 25.0, 6.25, 10.0, 0.5),
     "claude-opus-4-8":    (5.0, 25.0, 6.25, 10.0, 0.5),
     "claude-opus-4-7":    (5.0, 25.0, 6.25, 10.0, 0.5),
+    # 4-6 needs its own row: without it the prefix match falls back to
+    # "claude-opus-4" and prices it at the 4.0 rate — 3x too high.
+    "claude-opus-4-6":    (5.0, 25.0, 6.25, 10.0, 0.5),
     "claude-opus-4-5":    (5.0, 25.0, 6.25, 10.0, 0.5),
     "claude-opus-4-1":    (15.0, 75.0, 18.75, 30.0, 1.5),
     "claude-opus-4":      (15.0, 75.0, 18.75, 30.0, 1.5),
@@ -297,6 +301,35 @@ def _keychain_slot(cfgdir):
     return "Claude Code-credentials-" + hashlib.sha256(cfgdir.encode()).hexdigest()[:8]
 
 
+def _provider_of(cfgdir):
+    """Preset name of a provider account, or None. The marker must be a real
+    file — same rule as hccs is_provider(): every ~/.claude entry is symlinked
+    into each account, so a planted symlink must not pass as provider state."""
+    path = os.path.join(cfgdir, ".hccs-provider.json")
+    if os.path.islink(path) or not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f).get("provider") or None
+    except Exception:
+        return None
+
+
+def _provider_slot(cfgdir):
+    # Matches hccs provider_slot(): "hccs-provider-" + sha256(configDir)[:8]
+    return "hccs-provider-" + hashlib.sha256(cfgdir.encode()).hexdigest()[:8]
+
+
+def _has_provider_token(cfgdir):
+    if platform.system() == "Darwin":
+        r = subprocess.run(
+            ["security", "find-generic-password", "-a", os.environ.get("USER", ""),
+             "-s", _provider_slot(cfgdir)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return r.returncode == 0
+    return os.path.exists(os.path.join(cfgdir, ".provider-token"))
+
+
 def _has_credentials(cfgdir):
     """cfgdir=None → the 'default' account (unsuffixed Keychain slot)."""
     if platform.system() == "Darwin":
@@ -319,10 +352,23 @@ def list_accounts(buckets):
             cfg = os.path.join(acc_dir, name)
             if not os.path.isdir(cfg):
                 continue
+            prov = _provider_of(cfg)
             accounts[name] = {
-                "name": name, "kind": "hccs",
-                "email": _email_of(os.path.join(cfg, ".claude.json")),
-                "logged_in": _has_credentials(cfg),
+                "name": name,
+                "kind": "provider" if prov else "hccs",
+                "provider": prov,
+                # A provider account authenticates with an API key, so it has no
+                # oauthAccount and "logged_in" means "an API key is stored".
+                "email": None if prov else _email_of(os.path.join(cfg, ".claude.json")),
+                "logged_in": _has_provider_token(cfg) if prov else _has_credentials(cfg),
+                # Claude Code does not document how ANTHROPIC_AUTH_TOKEN behaves
+                # when the config dir also holds an OAuth login. Surface it —
+                # matching hccs has_oauth(): a stored credential OR a leftover
+                # identity block in .claude.json both count.
+                "oauth_mixed": bool(prov and (
+                    _has_credentials(cfg)
+                    or _email_of(os.path.join(cfg, ".claude.json"))
+                )),
             }
     accounts["default"] = {
         "name": "default", "kind": "default",
