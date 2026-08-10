@@ -21,13 +21,14 @@ A thin wrapper around [`claude`](https://claude.com/claude-code) — one shared 
 hccs work --resume        # run claude as account "work", every flag passes through
 hccs personal -p "hi"     # account "personal" — no re-login
 hccs glm                  # same, but through z.ai/GLM with an API key
+hccs codex                # Claudex: Claude Code harness + OpenAI/Codex models (local proxy)
 hccs dashboard            # per-account usage & cost, in your browser
 ```
 
 - 🔁 **Instant switching** — log in once per account, then `hccs <account>` just works
 - 🧰 **Full passthrough** — `hccs <account> [args...]` ≡ `claude [args...]` (`--resume`, `-c`, `-p`, ...)
 - 🤝 **Everything shared except auth** — agents, skills, hooks, settings, session history
-- 🔌 **Other providers too** — `hccs glm` runs Claude Code against z.ai with an API key
+- 🔌 **Other providers too** — `hccs glm` (z.ai API key) and `hccs codex` (ChatGPT/Codex via CLIProxyAPI)
 - 📊 **Accurate cost tracking** — per-account attribution, correct even across cross-account `--resume`
 - 🧹 **Clean uninstall** — your default Claude setup is never touched
 
@@ -74,8 +75,34 @@ hccs add-token glm           # replace a rotated or revoked key
 hccs refresh-preset glm      # re-apply the built-in preset after an hccs upgrade
 ```
 
-Available presets: `glm` (z.ai — `https://api.z.ai/api/anthropic`, GLM-4.7/5.2). Get a key at
-[z.ai](https://z.ai/manage-apikey/apikey-list).
+Available presets:
+
+| Preset | Backend | Auth |
+|--------|---------|------|
+| `glm` | z.ai Anthropic-compatible API | API key (prompt once) |
+| `codex` | Local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) → ChatGPT/Codex OAuth | `hccs codex-login` (import `~/.codex` or browser OAuth) |
+
+### Claudex (`hccs codex`)
+
+Runs **Claude Code** (tools, skills, `--resume`) with **OpenAI models** such as `gpt-5.6-sol` /
+`terra` / `luna`. hccs downloads and manages CLIProxyAPI under `~/.hccs/proxy`, pins one ChatGPT
+OAuth **slot** per account, and restarts the proxy when the pin changes.
+
+```sh
+hccs codex-login              # import ~/.codex or OAuth → slot "default"
+hccs codex                    # account "codex", slot default
+hccs codex-login work         # another ChatGPT account → slot "work"
+hccs codex-work --resume      # pin slot work (multi-account)
+hccs proxy status|start|stop  # debug the local proxy (auto-started on codex)
+```
+
+**Safety:** session history is shared across accounts — resuming an Anthropic session under `codex`
+sends that transcript to OpenAI via the proxy. The gateway key is in the process environment (same
+blast radius as other provider tokens). This path is community/Claudex-style routing; check provider
+terms for your use case. `hccs remove codex-work` deletes the hccs account only — OAuth slots under
+`~/.hccs/proxy/auth/` are kept. Uninstall stops the proxy and removes `~/.hccs` (not `~/.codex`).
+
+Get a z.ai key for GLM at [z.ai](https://z.ai/manage-apikey/apikey-list).
 
 **How it differs under the hood.** A settings `env` block outranks the process environment in
 Claude Code, so the endpoint and model mapping cannot simply be exported — they have to live in the

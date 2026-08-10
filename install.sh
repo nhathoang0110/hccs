@@ -18,6 +18,16 @@ mkdir -p "$BIN"
 install -m 0755 "$SRC_DIR/hccs" "$BIN/hccs"
 echo "Installed: $BIN/hccs"
 
+# Claudex / CLIProxyAPI helpers (sourced by hccs at runtime)
+SHARE="${HCCS_SHARE:-$HOME/.local/share/hccs}"
+mkdir -p "$SHARE"
+if [ -f "$SRC_DIR/hccs-proxy.lib" ]; then
+  install -m 0644 "$SRC_DIR/hccs-proxy.lib" "$SHARE/hccs-proxy.lib"
+  # Also keep a copy next to the bin for repo-style layouts / npm global prefix.
+  install -m 0644 "$SRC_DIR/hccs-proxy.lib" "$BIN/hccs-proxy.lib"
+  echo "Installed: hccs-proxy.lib"
+fi
+
 # Optional helper: sync sessions from the `ccs` tool into hccs (if present in the repo)
 if [ -f "$SRC_DIR/sync-from-ccs.sh" ]; then
   install -m 0755 "$SRC_DIR/sync-from-ccs.sh" "$BIN/hccs-sync-ccs"
@@ -37,7 +47,6 @@ fi
 
 # Dashboard runtime: python engine + self-contained UI
 if [ -f "$SRC_DIR/hccs-dashboard.py" ]; then
-  SHARE="$HOME/.local/share/hccs"
   mkdir -p "$SHARE"
   install -m 0644 "$SRC_DIR/hccs-dashboard.py" "$SHARE/hccs-dashboard.py"
   [ -f "$SRC_DIR/dashboard/index.html" ] && install -m 0644 "$SRC_DIR/dashboard/index.html" "$SHARE/index.html"

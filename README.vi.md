@@ -21,13 +21,14 @@ CLI mỏng bọc quanh [`claude`](https://claude.com/claude-code) — dùng chun
 hccs work --resume        # chạy claude dưới account "work", passthrough mọi flag
 hccs personal -p "hi"     # account "personal" — không cần login lại
 hccs glm                  # cũng vậy, nhưng đi qua z.ai/GLM bằng API key
+hccs codex                # Claudex: harness Claude Code + model OpenAI/Codex (proxy local)
 hccs dashboard            # usage & chi phí per-account, mở trong browser
 ```
 
 - 🔁 **Switch tức thì** — mỗi account login một lần, sau đó `hccs <account>` là chạy
 - 🧰 **Passthrough đầy đủ** — `hccs <account> [args...]` ≡ `claude [args...]` (`--resume`, `-c`, `-p`, ...)
 - 🤝 **Share mọi thứ trừ auth** — agents, skills, hooks, settings, lịch sử session
-- 🔌 **Dùng được provider khác** — `hccs glm` chạy Claude Code qua z.ai bằng API key
+- 🔌 **Provider khác** — `hccs glm` (API key z.ai) và `hccs codex` (ChatGPT/Codex qua CLIProxyAPI)
 - 📊 **Trace chi phí chuẩn** — attribution per-account, đúng cả khi `--resume` chéo account
 - 🧹 **Gỡ sạch** — setup Claude mặc định không bao giờ bị đụng
 
@@ -74,8 +75,34 @@ hccs add-token glm           # thay key khi bị xoay vòng hoặc thu hồi
 hccs refresh-preset glm      # áp lại preset built-in sau khi nâng cấp hccs
 ```
 
-Preset có sẵn: `glm` (z.ai — `https://api.z.ai/api/anthropic`, GLM-4.7/5.2). Lấy key tại
-[z.ai](https://z.ai/manage-apikey/apikey-list).
+Preset có sẵn:
+
+| Preset | Backend | Auth |
+|--------|---------|------|
+| `glm` | API z.ai tương thích Anthropic | API key (hỏi một lần) |
+| `codex` | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) local → OAuth ChatGPT/Codex | `hccs codex-login` (import `~/.codex` hoặc OAuth browser) |
+
+### Claudex (`hccs codex`)
+
+Chạy **Claude Code** (tools, skills, `--resume`) với **model OpenAI** (`gpt-5.6-sol` / `terra` /
+`luna`). hccs tải và quản lý CLIProxyAPI dưới `~/.hccs/proxy`, **pin** một slot OAuth ChatGPT
+mỗi account, và **restart** proxy khi đổi pin.
+
+```sh
+hccs codex-login              # import ~/.codex hoặc OAuth → slot "default"
+hccs codex                    # account "codex", slot default
+hccs codex-login work         # ChatGPT khác → slot "work"
+hccs codex-work --resume      # pin slot work (multi-account)
+hccs proxy status|start|stop  # debug proxy (tự start khi vào codex)
+```
+
+**An toàn:** history session share giữa account — resume session Anthropic dưới `codex` sẽ gửi
+transcript sang OpenAI qua proxy. Gateway key nằm trong env process (cùng blast radius provider
+token khác). Đây là routing kiểu Claudex/community; tự kiểm tra điều khoản nhà cung cấp.
+`hccs remove` chỉ xóa account hccs — giữ slot OAuth trong `~/.hccs/proxy/auth/`. Uninstall stop
+proxy và xóa `~/.hccs` (không đụng `~/.codex`).
+
+Lấy key GLM tại [z.ai](https://z.ai/manage-apikey/apikey-list).
 
 **Khác biệt bên dưới.** Trong Claude Code, khối `env` của settings **thắng** biến môi trường của
 tiến trình, nên endpoint và mapping model không thể chỉ export ra shell — chúng phải nằm trong

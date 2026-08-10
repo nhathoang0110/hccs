@@ -1,0 +1,610 @@
+# hccs-proxy.lib — CLIProxyAPI / Claudex support for hccs
+# Sourced by `hccs` (not a standalone executable).
+# Requires: die, info, warn, confirm, have_tty, HCCS_* env vars.
+
+# Proxy slot recorded on a codex provider account ("" if not codex / unreadable).
+proxy_slot_of() {  # $1 = cfgdir
+  python3 - "$1/.hccs-provider.json" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    print(((d.get("proxy") or {}).get("slot")) or "")
+except Exception:
+    print("")
+PY
+}
+
+
+# ── CLIProxyAPI (Claudex / codex preset) ────────────────────────────────────
+# Layout: $HCCS_PROXY_HOME/{bin,config.yaml,gateway.key,auth/<slot>/,logs,state}
+
+proxy_bin()     { printf '%s/bin/cli-proxy-api' "$HCCS_PROXY_HOME"; }
+proxy_cfg()     { printf '%s/config.yaml' "$HCCS_PROXY_HOME"; }
+proxy_pidfile() { printf '%s/state/server.pid' "$HCCS_PROXY_HOME"; }
+proxy_logfile() { printf '%s/logs/server.log' "$HCCS_PROXY_HOME"; }
+proxy_gwfile()  { printf '%s/gateway.key' "$HCCS_PROXY_HOME"; }
+proxy_mgmtfile(){ printf '%s/mgmt.key' "$HCCS_PROXY_HOME"; }
+proxy_auth_dir(){ printf '%s/auth/%s' "$HCCS_PROXY_HOME" "$1"; }  # $1 = slot
+proxy_active_slot_file() { printf '%s/state/active-slot' "$HCCS_PROXY_HOME"; }
+
+# Map OS/arch → CPA release asset base name (without .tar.gz).
+cpa_asset_name() {
+  local os arch
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+  case "$os" in
+    darwin) os=darwin ;;
+    linux)  os=linux ;;
+    *) die "CLIProxyAPI: unsupported OS '$os'" ;;
+  esac
+  case "$arch" in
+    arm64|aarch64) arch=aarch64 ;;
+    x86_64|amd64)  arch=amd64 ;;
+    *) die "CLIProxyAPI: unsupported arch '$arch'" ;;
+  esac
+  printf 'CLIProxyAPI_%s_%s_%s' "$HCCS_CPA_VERSION" "$os" "$arch"
+}
+
+ensure_proxy_dirs() {
+  mkdir -p "$HCCS_PROXY_HOME/bin" "$HCCS_PROXY_HOME/auth" \
+           "$HCCS_PROXY_HOME/logs" "$HCCS_PROXY_HOME/state"
+}
+
+# Random key material for CPA gateway / management (never printed).
+_gen_key() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+  else
+    python3 -c 'import secrets; print(secrets.token_hex(24))'
+  fi
+}
+
+ensure_gateway_key() {
+  ensure_proxy_dirs
+  local f; f="$(proxy_gwfile)"
+  if [ ! -f "$f" ]; then
+    ( umask 077; _gen_key >"$f" ) || die "could not write gateway key"
+    chmod 600 "$f" 2>/dev/null || true
+  fi
+  [ -s "$f" ] || die "gateway key file is empty: $f"
+}
+
+ensure_mgmt_key() {
+  ensure_proxy_dirs
+  local f; f="$(proxy_mgmtfile)"
+  if [ ! -f "$f" ]; then
+    ( umask 077; _gen_key >"$f" ) || die "could not write management key"
+    chmod 600 "$f" 2>/dev/null || true
+  fi
+}
+
+read_gateway_key() {
+  ensure_gateway_key
+  cat "$(proxy_gwfile)"
+}
+
+# Download + install CPA binary if missing or wrong version.
+ensure_proxy_binary() {
+  ensure_proxy_dirs
+  local bin ver_line
+  bin="$(proxy_bin)"
+  if [ -x "$bin" ]; then
+    ver_line="$("$bin" -h 2>&1 | head -1 || true)"
+    case "$ver_line" in
+      *"Version: $HCCS_CPA_VERSION"*|*"$HCCS_CPA_VERSION"*) return 0 ;;
+    esac
+    # Wrong version → re-download
+  fi
+  command -v curl >/dev/null 2>&1 || die "'curl' required to download CLIProxyAPI"
+  command -v tar  >/dev/null 2>&1 || die "'tar' required to install CLIProxyAPI"
+  local asset url tmp
+  asset="$(cpa_asset_name)"
+  url="${HCCS_CPA_GITHUB}/releases/download/v${HCCS_CPA_VERSION}/${asset}.tar.gz"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/hccs-cpa.XXXXXX")"
+  info "hccs: downloading CLIProxyAPI v${HCCS_CPA_VERSION}…"
+  if ! curl -fsSL -o "$tmp/cpa.tgz" "$url"; then
+    rm -rf "$tmp"
+    die "download failed: $url"
+  fi
+  if ! tar -xzf "$tmp/cpa.tgz" -C "$tmp"; then
+    rm -rf "$tmp"
+    die "extract failed"
+  fi
+  if [ ! -f "$tmp/cli-proxy-api" ]; then
+    rm -rf "$tmp"
+    die "archive missing cli-proxy-api binary"
+  fi
+  # Optional checksums
+  if curl -fsSL -o "$tmp/checksums.txt" \
+      "${HCCS_CPA_GITHUB}/releases/download/v${HCCS_CPA_VERSION}/checksums.txt" 2>/dev/null; then
+    if command -v shasum >/dev/null 2>&1; then
+      local got want
+      got="$(shasum -a 256 "$tmp/cpa.tgz" | awk '{print $1}')"
+      want="$(awk -v a="${asset}.tar.gz" '$2==a || $1==a || index($0,a){print $1; exit}' "$tmp/checksums.txt" || true)"
+      if [ -n "$want" ] && [ "$got" != "$want" ]; then
+        rm -rf "$tmp"
+        die "CLIProxyAPI checksum mismatch (got $got want $want)"
+      fi
+    fi
+  fi
+  if ! install -m 755 "$tmp/cli-proxy-api" "$bin" 2>/dev/null; then
+    cp "$tmp/cli-proxy-api" "$bin"
+    chmod 755 "$bin"
+  fi
+  rm -rf "$tmp"
+  [ -x "$bin" ] || die "binary not executable: $bin"
+}
+
+# Write CPA config for a pin slot. Always local bind.
+write_proxy_config() {  # $1 = slot
+  local slot="$1" gw mgmt auth
+  ensure_gateway_key
+  ensure_mgmt_key
+  gw="$(read_gateway_key)"
+  mgmt="$(cat "$(proxy_mgmtfile)")"
+  auth="$(proxy_auth_dir "$slot")"
+  mkdir -p "$auth"
+  # Expand ~ for CPA — it supports ~ in auth-dir; use absolute path to be safe.
+  cat >"$(proxy_cfg)" <<EOF
+# Generated by hccs — do not hand-edit while hccs manages the proxy
+host: "${HCCS_CPA_HOST}"
+port: ${HCCS_CPA_PORT}
+
+remote-management:
+  allow-remote: false
+  secret-key: "${mgmt}"
+
+auth-dir: "${auth}"
+
+api-keys:
+  - "${gw}"
+
+routing:
+  strategy: "round-robin"
+  session-affinity: true
+  session-affinity-ttl: "1h"
+EOF
+  chmod 600 "$(proxy_cfg)" 2>/dev/null || true
+  printf '%s\n' "$slot" >"$(proxy_active_slot_file)"
+}
+
+proxy_pid_running() {
+  local pf pid
+  pf="$(proxy_pidfile)"
+  [ -f "$pf" ] || return 1
+  pid="$(cat "$pf" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+# Healthy only when gateway works AND at least one model is listed.
+# CPA can return HTTP 200 with data=[] briefly before OAuth auth files finish loading;
+# treating that as ready caused empty-model / model_not_found races on cold start.
+proxy_health() {
+  local gw body
+  gw="$(read_gateway_key 2>/dev/null)" || return 1
+  body="$(curl -fsS --max-time 2 \
+    -H "Authorization: Bearer ${gw}" \
+    "http://${HCCS_CPA_HOST}:${HCCS_CPA_PORT}/v1/models" 2>/dev/null)" || return 1
+  python3 -c 'import json,sys
+try:
+    d=json.loads(sys.argv[1])
+except Exception:
+    sys.exit(1)
+sys.exit(0 if (d.get("data") or []) else 1)' "$body" 2>/dev/null
+}
+
+proxy_stop() {
+  local pf pid
+  pf="$(proxy_pidfile)"
+  if [ -f "$pf" ]; then
+    pid="$(cat "$pf" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      local i=0
+      while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$pf"
+  fi
+  # Also clear any leftover listener we own (best-effort)
+  return 0
+}
+
+proxy_start_daemon() {
+  ensure_proxy_binary
+  local bin log pidf
+  bin="$(proxy_bin)"
+  log="$(proxy_logfile)"
+  pidf="$(proxy_pidfile)"
+  mkdir -p "$(dirname "$log")" "$(dirname "$pidf")"
+  # Free port if our stale process holds it
+  if ! proxy_health; then
+    if command -v lsof >/dev/null 2>&1; then
+      local holder
+      holder="$(lsof -tiTCP:"${HCCS_CPA_PORT}" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
+      if [ -n "$holder" ]; then
+        # Only kill if it looks like cli-proxy-api
+        case "$(ps -p "$holder" -o command= 2>/dev/null || true)" in
+          *cli-proxy-api*) kill "$holder" 2>/dev/null || true; sleep 0.3 ;;
+          *) die "port ${HCCS_CPA_PORT} is in use by PID $holder (not CLIProxyAPI) — free it or set HCCS_CPA_PORT" ;;
+        esac
+      fi
+    fi
+  fi
+  nohup "$bin" -config "$(proxy_cfg)" >>"$log" 2>&1 &
+  echo $! >"$pidf"
+  # Up to ~15s: wait for listen + auth load + non-empty model catalog.
+  local i=0
+  while [ "$i" -lt 150 ]; do
+    if proxy_health; then
+      return 0
+    fi
+    # Still running?
+    if [ -f "$pidf" ]; then
+      local pid; pid="$(cat "$pidf" 2>/dev/null || true)"
+      if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        die "CLIProxyAPI exited early — see $(proxy_logfile)"
+      fi
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  die "CLIProxyAPI failed to become healthy on ${HCCS_CPA_HOST}:${HCCS_CPA_PORT} (no models yet) — see $(proxy_logfile)"
+}
+
+# Ensure proxy is up for slot. Restart when active pin slot differs (V3).
+ensure_proxy_running() {  # $1 = slot
+  local slot="$1" prev
+  [ -n "$slot" ] || slot=default
+  ensure_proxy_dirs
+  ensure_proxy_binary
+  prev="$(cat "$(proxy_active_slot_file)" 2>/dev/null || true)"
+  # Skip rewrite+restart when already pinned and healthy (avoids secret churn / watcher races).
+  if [ "$prev" = "$slot" ] && proxy_pid_running && proxy_health; then
+    return 0
+  fi
+  write_proxy_config "$slot"
+  # Pin change or unhealthy → restart so auth-dir is exclusive (V3).
+  proxy_stop
+  proxy_start_daemon
+}
+
+# Slot must have at least one codex-*.json auth file.
+assert_slot_has_auth() {  # $1 = slot
+  local dir n
+  dir="$(proxy_auth_dir "$1")"
+  mkdir -p "$dir"
+  n="$(find "$dir" -maxdepth 1 -name 'codex-*.json' 2>/dev/null | wc -l | tr -d ' ')"
+  [ "${n:-0}" -ge 1 ] || die "no Codex OAuth in slot '$1'. Run: hccs codex-login $1"
+}
+
+# Import ~/.codex/auth.json into a pin slot (read-only on source).
+import_codex_home_to_slot() {  # $1 = slot
+  local slot="$1" src dest
+  src="$HOME/.codex/auth.json"
+  [ -f "$src" ] || die "no ~/.codex/auth.json — run 'codex login' first or use OAuth"
+  dest="$(proxy_auth_dir "$slot")"
+  mkdir -p "$dest"
+  python3 - "$src" "$dest" <<'PY'
+import json, base64, sys
+from pathlib import Path
+from datetime import datetime, timezone, timedelta
+
+src, dest = Path(sys.argv[1]), Path(sys.argv[2])
+d = json.loads(src.read_text())
+tokens = d.get("tokens") or {}
+access = tokens.get("access_token") or ""
+refresh = tokens.get("refresh_token") or ""
+id_token = tokens.get("id_token") or ""
+account_id = tokens.get("account_id") or ""
+last_refresh = d.get("last_refresh") or ""
+if not access or not refresh:
+    print("hccs: ~/.codex/auth.json missing tokens", file=sys.stderr)
+    sys.exit(1)
+
+def b64url(s):
+    s += "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s.encode())
+
+email = ""
+exp_iso = ""
+try:
+    payload = json.loads(b64url(id_token.split(".")[1]))
+    email = payload.get("email") or ""
+    if not email:
+        for v in payload.values():
+            if isinstance(v, dict) and v.get("email"):
+                email = v["email"]
+                break
+    exp = payload.get("exp")
+    if exp:
+        exp_iso = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+except Exception:
+    pass
+if not email:
+    email = f"unknown-{(account_id or 'user')[:8]}@chatgpt.local"
+
+out = {
+    "type": "codex",
+    "id_token": id_token,
+    "access_token": access,
+    "refresh_token": refresh,
+    "account_id": account_id,
+    "last_refresh": last_refresh,
+    "email": email,
+    "expired": exp_iso
+    or (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+}
+# Clear other codex files in slot so pin is exclusive
+for old in dest.glob("codex-*.json"):
+    old.unlink()
+safe = email.replace("/", "_")
+aid = account_id or "noacct"
+path = dest / f"codex-{aid}-{safe}.json"
+path.write_text(json.dumps(out, indent=2) + "\n")
+path.chmod(0o600)
+print(email)
+PY
+}
+
+# OAuth browser login into slot via CPA -codex-login.
+oauth_codex_login_slot() {  # $1 = slot
+  local slot="$1"
+  ensure_proxy_binary
+  write_proxy_config "$slot"
+  # Stop server so -codex-login can own callback; login is offline to running API.
+  proxy_stop 2>/dev/null || true
+  info "hccs: starting Codex OAuth for slot '$slot' (browser may open)…"
+  "$(proxy_bin)" -config "$(proxy_cfg)" -codex-login \
+    || die "Codex OAuth failed"
+  assert_slot_has_auth "$slot"
+}
+
+cmd_codex_login() {
+  local slot="${1:-default}" force_import=0
+  case "$slot" in
+    --import-codex-home)
+      force_import=1
+      slot="${2:-default}"
+      ;;
+  esac
+  # Slots are not account names — only charset validation (reserved cmds OK as slots).
+  [[ "$slot" =~ ^[A-Za-z0-9_.-]+$ ]] || die "invalid slot name: '$slot'"
+  case "$slot" in .|..) die "invalid slot name: '$slot'" ;; esac
+
+  if [ "$force_import" -eq 1 ]; then
+    local email
+    email="$(import_codex_home_to_slot "$slot")" || die "import failed"
+    info "imported ~/.codex into slot '$slot' ($email)"
+    return 0
+  fi
+
+  if [ -f "$HOME/.codex/auth.json" ]; then
+    if have_tty; then
+      if confirm "Import current ~/.codex/auth.json into slot '$slot'?"; then
+        local email
+        email="$(import_codex_home_to_slot "$slot")" || die "import failed"
+        info "imported into slot '$slot' ($email)"
+        return 0
+      fi
+      info "declined import — starting OAuth…"
+    else
+      die "no TTY: pass --import-codex-home to import ~/.codex, or run interactively for OAuth"
+    fi
+  fi
+  oauth_codex_login_slot "$slot"
+  info "Codex OAuth stored in slot '$slot'"
+}
+
+cmd_proxy() {
+  local sub="${1:-status}"
+  shift || true
+  case "$sub" in
+    status)
+      if proxy_pid_running; then
+        local pid; pid="$(cat "$(proxy_pidfile)")"
+        if proxy_health; then
+          info "proxy: running (pid $pid) healthy on ${HCCS_CPA_HOST}:${HCCS_CPA_PORT}"
+          info "active-slot: $(cat "$(proxy_active_slot_file)" 2>/dev/null || echo '?')"
+        else
+          info "proxy: pid $pid present but NOT healthy"
+        fi
+      else
+        info "proxy: stopped"
+      fi
+      ;;
+    start)
+      local slot="${1:-$(cat "$(proxy_active_slot_file)" 2>/dev/null || echo default)}"
+      ensure_proxy_running "$slot"
+      info "proxy started for slot '$slot'"
+      ;;
+    stop)
+      proxy_stop
+      info "proxy stopped"
+      ;;
+    *) die "usage: hccs proxy status|start|stop" ;;
+  esac
+}
+
+# Heuristic: account name → codex slot (codex → default, codex-work → work).
+codex_slot_from_account() {
+  local acc="$1"
+  case "$acc" in
+    codex) printf 'default' ;;
+    codex-*) printf '%s' "${acc#codex-}" ;;
+    *) printf '' ;;
+  esac
+}
+
+# True when this account name should auto-create as codex provider.
+is_codex_account_name() {
+  case "$1" in
+    codex|codex-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Prepare codex provider: proxy up + pin + gateway token for store/exec.
+prepare_codex_runtime() {  # $1 = cfgdir, $2 = account name
+  local cfg="$1" acc="$2" slot
+  slot="$(proxy_slot_of "$cfg")"
+  [ -n "$slot" ] || slot="$(codex_slot_from_account "$acc")"
+  [ -n "$slot" ] || slot=default
+  assert_slot_has_auth "$slot"
+  ensure_proxy_running "$slot"
+  # Return gateway key on stdout for exec
+  read_gateway_key
+}
+
+
+# ── Provider policy (codex vs key-token presets) ─────────────────────────────
+# Keep ALL preset-specific branching here so cmd_switch / cmd_add stay linear.
+
+# Account name → implied "preset\tslot" for auto-create, or empty.
+# Examples: glm → "glm\t" ; codex → "codex\tdefault" ; codex-work → "codex\twork"
+resolve_provider_intent() {  # $1 = account name
+  local acc="$1"
+  if preset_exists "$acc"; then
+    if [ "$acc" = "codex" ]; then
+      printf 'codex\tdefault\n'
+    else
+      printf '%s\t\n' "$acc"
+    fi
+    return 0
+  fi
+  case "$acc" in
+    codex-*)
+      printf 'codex\t%s\n' "${acc#codex-}"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# Default slot for a preset+account when --slot omitted.
+default_slot_for() {  # $1 = preset, $2 = account
+  case "$1" in
+    codex)
+      local s
+      s="$(codex_slot_from_account "$2")"
+      printf '%s\n' "${s:-default}"
+      ;;
+    *) printf '\n' ;;
+  esac
+}
+
+# Acquire token before account dir exists (add path). Prints token.
+# $1=preset $2=account $3=slot
+provider_mint_token() {
+  case "$1" in
+    codex)
+      local slot="${3:-default}"
+      assert_slot_has_auth "$slot"
+      ensure_gateway_key
+      read_gateway_key
+      ;;
+    *)
+      prompt_token "$2"
+      ;;
+  esac
+}
+
+# Token for an existing provider account at switch time. Prints token.
+# $1=cfgdir $2=account $3=preset
+provider_token() {
+  case "$3" in
+    codex)
+      # Gateway file is the only source of truth — never Keychain for codex.
+      prepare_codex_runtime "$1" "$2"
+      ;;
+    *)
+      local tok
+      tok="$(read_token "$1" 2>/dev/null || true)"
+      [ -n "$tok" ] || die "no token stored for '$2'. Run: hccs add-token $2"
+      printf '%s' "$tok"
+      ;;
+  esac
+}
+
+# Side effects after marker written on create (ensure daemons, etc.).
+# $1=cfgdir $2=account $3=preset $4=slot
+provider_on_create() {
+  case "$3" in
+    codex)
+      ensure_proxy_running "${4:-default}"
+      ;;
+  esac
+  return 0
+}
+
+# Finish a half-built provider account (pending file). Prints token.
+# $1=cfgdir $2=account $3=pending preset
+provider_finish_pending() {
+  local cfg="$1" acc="$2" pending="$3" slot tok
+  case "$pending" in
+    codex)
+      slot="$(codex_slot_from_account "$acc")"
+      [ -n "$slot" ] || slot=default
+      assert_slot_has_auth "$slot"
+      write_provider_marker "$cfg" "$pending" "$slot" || die "could not write the provider marker"
+      ensure_gateway_key
+      ensure_proxy_running "$slot"
+      tok="$(read_gateway_key)"
+      # Do not store gateway in Keychain — only keep marker complete.
+      printf '%s' "$tok"
+      ;;
+    *)
+      tok="$(prompt_token "$acc")" || die "no token provided"
+      write_provider_marker "$cfg" "$pending" || die "could not write the provider marker"
+      store_token "$cfg" "$tok"
+      printf '%s' "$tok"
+      ;;
+  esac
+}
+
+# Whether this provider uses store_token / add-token.
+provider_uses_stored_token() {
+  case "$1" in
+    codex) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+provider_add_token_hint() {  # $1=cfgdir $2=account
+  case "$(provider_of "$1")" in
+    codex)
+      die "'$2' is a codex (Claudex) account — use: hccs codex-login $(proxy_slot_of "$1" || echo default)"
+      ;;
+  esac
+  return 0
+}
+
+# Label fragment for list/which after "(provider: X, …)"
+provider_cred_label() {  # $1=cfgdir $2=preset
+  case "$2" in
+    codex)
+      local slot dir
+      slot="$(proxy_slot_of "$1")"
+      [ -n "$slot" ] || slot="?"
+      dir="$(proxy_auth_dir "$slot")"
+      if [ -s "$(proxy_gwfile)" ] && [ -d "$dir" ] \
+        && find "$dir" -maxdepth 1 -name 'codex-*.json' 2>/dev/null | grep -q .
+      then
+        printf 'slot: %s, ready' "$slot"
+      else
+        printf 'slot: %s, need login' "$slot"
+      fi
+      ;;
+    *)
+      if has_token "$1"; then
+        printf 'token set'
+      else
+        printf 'NO TOKEN'
+      fi
+      ;;
+  esac
+}
