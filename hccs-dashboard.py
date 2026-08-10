@@ -301,26 +301,87 @@ def _keychain_slot(cfgdir):
     return "Claude Code-credentials-" + hashlib.sha256(cfgdir.encode()).hexdigest()[:8]
 
 
-def _provider_of(cfgdir):
-    """Preset name of a provider account, or None. The marker must be a real
-    file — same rule as hccs is_provider(): every ~/.claude entry is symlinked
-    into each account, so a planted symlink must not pass as provider state."""
+def _provider_marker(cfgdir):
+    """Parsed .hccs-provider.json, or None. Marker must be a real file — same
+    rule as hccs is_provider(): every ~/.claude entry is symlinked into each
+    account, so a planted symlink must not pass as provider state."""
     path = os.path.join(cfgdir, ".hccs-provider.json")
     if os.path.islink(path) or not os.path.isfile(path):
         return None
     try:
         with open(path) as f:
-            return json.load(f).get("provider") or None
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
     except Exception:
         return None
 
 
+def _provider_of(cfgdir):
+    """Preset name of a provider account, or None."""
+    m = _provider_marker(cfgdir)
+    return (m.get("provider") or None) if m else None
+
+
 def _provider_slot(cfgdir):
     # Matches hccs provider_slot(): "hccs-provider-" + sha256(configDir)[:8]
+    # (Keychain/file name for API-key provider tokens — not the Claudex pin slot.)
     return "hccs-provider-" + hashlib.sha256(cfgdir.encode()).hexdigest()[:8]
 
 
+def _proxy_home():
+    return os.environ.get("HCCS_PROXY_HOME") or os.path.join(HCCS_HOME, "proxy")
+
+
+def _codex_pin_slot(cfgdir):
+    """Claudex pin slot from marker.proxy.slot (default when missing)."""
+    m = _provider_marker(cfgdir) or {}
+    if (m.get("provider") or "") != "codex":
+        return None
+    slot = ((m.get("proxy") or {}).get("slot") or "").strip()
+    return slot or "default"
+
+
+def _codex_slot_ready(slot):
+    """True when gateway key exists and the pin slot has a codex-*.json OAuth file."""
+    ph = _proxy_home()
+    gw = os.path.join(ph, "gateway.key")
+    if not (os.path.isfile(gw) and os.path.getsize(gw) > 0):
+        return False
+    adir = os.path.join(ph, "auth", slot or "default")
+    if not os.path.isdir(adir):
+        return False
+    try:
+        for name in os.listdir(adir):
+            if name.startswith("codex-") and name.endswith(".json"):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _codex_slot_email(slot):
+    """Best-effort ChatGPT email from the first codex auth file in the slot."""
+    adir = os.path.join(_proxy_home(), "auth", slot or "default")
+    if not os.path.isdir(adir):
+        return None
+    try:
+        for name in sorted(os.listdir(adir)):
+            if not (name.startswith("codex-") and name.endswith(".json")):
+                continue
+            try:
+                with open(os.path.join(adir, name)) as f:
+                    email = (json.load(f) or {}).get("email")
+                if email:
+                    return str(email)
+            except Exception:
+                continue
+    except OSError:
+        return None
+    return None
+
+
 def _has_provider_token(cfgdir):
+    """API-key providers (e.g. glm): Keychain / .provider-token."""
     if platform.system() == "Darwin":
         r = subprocess.run(
             ["security", "find-generic-password", "-a", os.environ.get("USER", ""),
@@ -328,6 +389,13 @@ def _has_provider_token(cfgdir):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return r.returncode == 0
     return os.path.exists(os.path.join(cfgdir, ".provider-token"))
+
+
+def _provider_ready(cfgdir, prov):
+    """Whether the provider account can actually authenticate right now."""
+    if prov == "codex":
+        return _codex_slot_ready(_codex_pin_slot(cfgdir) or "default")
+    return _has_provider_token(cfgdir)
 
 
 def _has_credentials(cfgdir):
@@ -353,14 +421,24 @@ def list_accounts(buckets):
             if not os.path.isdir(cfg):
                 continue
             prov = _provider_of(cfg)
+            pin_slot = _codex_pin_slot(cfg) if prov == "codex" else None
+            if prov == "codex":
+                email = _codex_slot_email(pin_slot or "default")
+            elif prov:
+                email = None
+            else:
+                email = _email_of(os.path.join(cfg, ".claude.json"))
             accounts[name] = {
                 "name": name,
                 "kind": "provider" if prov else "hccs",
                 "provider": prov,
-                # A provider account authenticates with an API key, so it has no
-                # oauthAccount and "logged_in" means "an API key is stored".
-                "email": None if prov else _email_of(os.path.join(cfg, ".claude.json")),
-                "logged_in": _has_provider_token(cfg) if prov else _has_credentials(cfg),
+                # Claudex pin name (null for non-codex). UI uses this for labels/cmds.
+                "proxy_slot": pin_slot,
+                # glm: no email. codex: ChatGPT email from OAuth file when present.
+                # oauth Claude: email from .claude.json.
+                "email": email,
+                # glm: API key stored. codex: gateway.key + slot OAuth file.
+                "logged_in": _provider_ready(cfg, prov) if prov else _has_credentials(cfg),
                 # Claude Code does not document how ANTHROPIC_AUTH_TOKEN behaves
                 # when the config dir also holds an OAuth login. Surface it —
                 # matching hccs has_oauth(): a stored credential OR a leftover

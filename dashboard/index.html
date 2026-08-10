@@ -408,11 +408,14 @@ function renderChart(d) {
   });
 }
 
-// A provider account authenticates with an API key, so "logged in" is the wrong
-// word for it and its identity is the preset, not an email address.
+// Provider cards: glm uses an API key; codex (Claudex) uses ChatGPT OAuth in a pin slot.
 function credBadge(a, okText, noText) {
   if (a.logged_in === null || a.logged_in === undefined) return "";
   if (a.kind === "provider") {
+    if (a.provider === "codex") {
+      return a.logged_in ? '<span class="badge ok">● ready</span>'
+                         : '<span class="badge warn">○ need login</span>';
+    }
     return a.logged_in ? '<span class="badge ok">● token set</span>'
                        : '<span class="badge warn">○ no token</span>';
   }
@@ -421,7 +424,15 @@ function credBadge(a, okText, noText) {
 }
 
 function identityOf(a) {
-  if (a.kind === "provider") return (a.provider || "provider") + " · api key";
+  if (a.kind === "provider") {
+    if (a.provider === "codex") {
+      var parts = ["codex"];
+      if (a.proxy_slot) parts.push("slot " + a.proxy_slot);
+      parts.push(a.email || "ChatGPT OAuth");
+      return parts.join(" · ");
+    }
+    return (a.provider || "provider") + " · api key";
+  }
   return a.email || "—";
 }
 
@@ -465,9 +476,17 @@ function renderAuth(d) {
   $("auth").innerHTML = accs.map(function (a) {
     var cred = credBadge(a, "OK", "not logged in");
     if (a.oauth_mixed) cred += '<span class="badge warn">⚠ oauth mixed</span>';
-    var cmd = a.kind === "default" ? "claude /login"
-            : a.kind === "provider" ? (a.logged_in ? "hccs " + a.name : "hccs add-token " + a.name)
-            : a.logged_in ? "hccs " + a.name : "hccs add " + a.name;
+    var cmd;
+    if (a.kind === "default") {
+      cmd = "claude /login";
+    } else if (a.kind === "provider" && a.provider === "codex") {
+      cmd = a.logged_in ? ("hccs " + a.name)
+                        : ("hccs codex-login " + (a.proxy_slot || "default"));
+    } else if (a.kind === "provider") {
+      cmd = a.logged_in ? ("hccs " + a.name) : ("hccs add-token " + a.name);
+    } else {
+      cmd = a.logged_in ? ("hccs " + a.name) : ("hccs add " + a.name);
+    }
     return '<tr><td style="font-family:var(--mono);font-weight:600">' + esc(a.name) + "</td>" +
       "<td>" + esc(identityOf(a)) + "</td><td>" + cred + "</td>" +
       '<td><span class="cli">' + esc(cmd) + '</span><button class="copy" data-cmd="' + esc(cmd) +
