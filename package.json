@@ -1,6 +1,6 @@
 {
   "name": "@hoangnn23/hccs",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Switch between multiple Claude Code accounts without re-authenticating, with GLM/Codex providers and a per-account usage & cost dashboard",
   "license": "MIT",
   "author": "hoangnn",

@@ -3,9 +3,10 @@
 
 # hccs
 
-**Switch account Claude Code tức thì. Biết chính xác mỗi account tốn bao nhiêu.**
+**Một CLI cho nhiều identity Claude Code — Anthropic, GLM và Codex — switch tức thì.**
 
-CLI mỏng bọc quanh [`claude`](https://claude.com/claude-code) — dùng chung một `~/.claude` (history, agents, skills, hooks), login tách riêng, kèm **dashboard usage & cost** per-account chạy local.
+Tạo bao nhiêu account cũng được, login mỗi cái một lần, rồi nhảy qua lại không re-auth.
+Dùng **Claude thật** (OAuth Anthropic), **GLM z.ai** (API key), hoặc **model ChatGPT/Codex trong harness Claude Code** (Claudex qua CLIProxyAPI local). Skills, agents, hooks, history session vẫn share; chỉ credential và endpoint đổi.
 
 [![npm](https://img.shields.io/npm/v/%40hoangnn23%2Fhccs?color=cb3837&logo=npm)](https://www.npmjs.com/package/@hoangnn23/hccs)
 [![CI](https://github.com/nhathoang0110/hccs/actions/workflows/ci.yml/badge.svg)](https://github.com/nhathoang0110/hccs/actions/workflows/ci.yml)
@@ -18,220 +19,272 @@ CLI mỏng bọc quanh [`claude`](https://claude.com/claude-code) — dùng chun
 </div>
 
 ```sh
-hccs work --resume        # chạy claude dưới account "work", passthrough mọi flag
-hccs personal -p "hi"     # account "personal" — không cần login lại
-hccs glm                  # cũng vậy, nhưng đi qua z.ai/GLM bằng API key
-hccs codex                # Claudex: harness Claude Code + model OpenAI/Codex (proxy local)
-hccs dashboard            # usage & chi phí per-account, mở trong browser
+# Nhiều acc Claude (Anthropic) — login 1 lần / acc, switch mãi
+hccs add work && hccs add personal
+hccs work --resume
+hccs personal -p "review PR này"
+
+# Cùng UI Claude Code, backend khác nhau
+hccs glm                    # z.ai GLM (API key)
+hccs codex                  # model OpenAI/Codex (Claudex)
+hccs codex-work --resume    # ChatGPT acc khác, đã pin
+
+hccs list
+hccs dashboard              # token & cost quy đổi API per-account
 ```
 
-- 🔁 **Switch tức thì** — mỗi account login một lần, sau đó `hccs <account>` là chạy
-- 🧰 **Passthrough đầy đủ** — `hccs <account> [args...]` ≡ `claude [args...]` (`--resume`, `-c`, `-p`, ...)
-- 🤝 **Share mọi thứ trừ auth** — agents, skills, hooks, settings, lịch sử session
-- 🔌 **Provider khác** — `hccs glm` (API key z.ai) và `hccs codex` (ChatGPT/Codex qua CLIProxyAPI)
-- 📊 **Trace chi phí chuẩn** — attribution per-account, đúng cả khi `--resume` chéo account
-- 🧹 **Gỡ sạch** — setup Claude mặc định không bao giờ bị đụng
+| Bạn muốn… | Cách dùng |
+|-----------|-----------|
+| Nhiều subscription / team Anthropic | `hccs add <tên>` → `hccs <tên>` |
+| GLM trong Claude Code | `hccs glm` (hoặc `hccs add myglm --provider glm`) |
+| Model Codex/GPT trong Claude Code | `hccs codex-login` → `hccs codex` / `hccs codex-<slot>` |
+| Switch không login lại | `hccs work` · `hccs glm` · `hccs codex-shuei` |
+| Resume session cũ | `hccs <account bất kỳ> --resume` (history share) |
+| Xem chi tiêu theo identity | `hccs dashboard` |
+
+- 🔁 **Multi-account** — bao nhiêu identity cũng được; auth một lần, switch mãi  
+- 🧠 **Ba backend một harness** — Claude Anthropic · GLM (z.ai) · Codex/ChatGPT (Claudex)  
+- 🧰 **Passthrough đầy đủ** — `hccs <account> [args...]` ≡ `claude [args...]`  
+- 🤝 **Workspace chung** — agents, skills, hooks, plugins, projects, history  
+- 📊 **Dashboard usage** — attribution per-account, kể cả resume chéo  
+- 🧹 **Uninstall sạch** — Claude mặc định không bị đụng  
 
 ![hccs dashboard](docs/assets/dashboard-dark.png)
 
-## Cơ chế
+---
 
-Claude Code hỗ trợ biến môi trường `CLAUDE_CONFIG_DIR`. Khi set, Claude tách **file `.claude.json`** (danh tính account) **và credential** riêng theo config dir.
+## Mô hình tư duy
 
-`hccs` tận dụng đúng cơ chế built-in này: mỗi account là một config dir riêng dưới `~/.hccs/accounts/<name>`, và **symlink toàn bộ `~/.claude`** (agents, skills, hooks, commands, settings, projects, history) vào đó. Kết quả: **chỉ authen là tách riêng** — còn lại dùng chung, kể cả lịch sử session (`--resume` thấy được session của account khác).
-
-```
-~/.hccs/accounts/<account>/       # = CLAUDE_CONFIG_DIR
-├── .claude.json                 # RIÊNG: danh tính (seed từ ~/.claude.json, bỏ oauthAccount)
-├── .credentials.json            # RIÊNG: token (chỉ Linux — macOS dùng Keychain)
-└── <mọi entry của ~/.claude>    # symlink → dùng chung
-```
-
-### Credential lưu ở đâu (theo OS)
-
-| OS | Nơi lưu token | Hệ quả |
-|----|---------------|--------|
-| **macOS** | Keychain, slot `Claude Code-credentials-<sha256(configDir)[:8]>` | Nằm ngoài config dir → `remove`/`uninstall` phải xoá slot riêng (hccs tự làm) |
-| **Linux** | File `<configDir>/.credentials.json` | Nằm trong config dir → tự cô lập, mất theo dir |
-| **Provider account, macOS** | Keychain, slot `hccs-provider-<sha256(configDir)[:8]>` | Do hccs ghi; hash theo config dir nên hai `HCCS_HOME` không bao giờ đụng nhau |
-| **Provider account, Linux** | File `<configDir>/.provider-token`, mode `600` | Mất theo dir |
-
-Với account OAuth, `hccs` không bao giờ tự đọc/ghi token — Claude tự quản theo `CLAUDE_CONFIG_DIR`.
-Với **provider account** thì có: API key bạn dán được lưu vào Keychain (hoặc file `600`) và export
-thành `ANTHROPIC_AUTH_TOKEN` khi chạy claude. Nó không bao giờ được ghi vào `settings.json`, cũng
-không bao giờ truyền qua tham số dòng lệnh.
-
-## Provider account
-
-Provider account chạy Claude Code qua một endpoint tương thích Anthropic bằng API key thay vì login
-Anthropic. Mọi thứ còn lại vẫn như account hccs bình thường — vẫn chung agents, skills, hooks và
-lịch sử session.
-
-```sh
-hccs glm                     # lần đầu hỏi API key z.ai, sau đó chạy thẳng
-hccs glm --resume            # flag vẫn passthrough như thường
-hccs add myglm --provider glm  # cùng preset nhưng đặt tên account khác
-hccs add-token glm           # thay key khi bị xoay vòng hoặc thu hồi
-hccs refresh-preset glm      # áp lại preset built-in sau khi nâng cấp hccs
+```text
+                    ┌─────────────────────────────────────┐
+                    │         Harness Claude Code         │
+                    │   tools · skills · hooks · resume   │
+                    └──────────────┬──────────────────────┘
+                                   │  hccs <account>
+           ┌───────────────────────┼───────────────────────┐
+           ▼                       ▼                       ▼
+    OAuth Anthropic            z.ai GLM              ChatGPT / Codex
+    (hccs work)              (hccs glm)            (hccs codex-*)
+    nhiều login Claude       API key 1 lần         nhiều OAuth slot
 ```
 
-Preset có sẵn:
+Mỗi **account hccs** là profile dưới `~/.hccs/accounts/<tên>`.  
+Switch chỉ đổi **ai authen** và **endpoint/model** — không đổi source project hay skill library.
 
-| Preset | Backend | Auth |
-|--------|---------|------|
-| `glm` | API z.ai tương thích Anthropic | API key (hỏi một lần) |
-| `codex` | [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) local → OAuth ChatGPT/Codex | `hccs codex-login` (import `~/.codex` hoặc OAuth browser) |
+| Loại account | Ví dụ tên | Auth (1 lần) | Model |
+|--------------|-----------|--------------|--------|
+| **Claude (OAuth)** | `work`, `personal` | Login Anthropic trong Claude | Claude family |
+| **GLM (API key)** | `glm`, `myglm` | Dán key z.ai một lần | `glm-*` |
+| **Codex / Claudex** | `codex`, `codex-work` | `hccs codex-login <slot>` | `gpt-5.6-sol` / `terra` / `luna` · … |
 
-### Claudex (`hccs codex`)
-
-Chạy **Claude Code** (tools, skills, `--resume`) với **model OpenAI** (`gpt-5.6-sol` / `terra` /
-`luna`). hccs tải và quản lý CLIProxyAPI dưới `~/.hccs/proxy`, **pin** một slot OAuth ChatGPT
-mỗi account, và **restart** proxy khi đổi pin.
-
-```sh
-hccs codex-login              # import ~/.codex hoặc OAuth → slot "default"
-hccs codex                    # account "codex", slot default
-hccs codex-login work         # ChatGPT khác → slot "work"
-hccs codex-work --resume      # pin slot work (multi-account)
-hccs proxy status|start|stop  # debug proxy (tự start khi vào codex)
-```
-
-**An toàn:** history session share giữa account — resume session Anthropic dưới `codex` sẽ gửi
-transcript sang OpenAI qua proxy. Gateway key nằm trong env process (cùng blast radius provider
-token khác). Đây là routing kiểu Claudex/community; tự kiểm tra điều khoản nhà cung cấp.
-`hccs remove` chỉ xóa account hccs — giữ slot OAuth trong `~/.hccs/proxy/auth/`. Uninstall stop
-proxy và xóa `~/.hccs` (không đụng `~/.codex`).
-
-Lấy key GLM tại [z.ai](https://z.ai/manage-apikey/apikey-list).
-
-**Khác biệt bên dưới.** Trong Claude Code, khối `env` của settings **thắng** biến môi trường của
-tiến trình, nên endpoint và mapping model không thể chỉ export ra shell — chúng phải nằm trong
-`settings.json` của chính account đó. Vì vậy provider account có một `settings.json` **thật**, được
-compose lại mỗi lần switch từ `~/.claude/settings.json` dùng chung cộng với env của preset. Hooks,
-permissions, statusline, plugin của bạn vẫn giữ nguyên; chỉ các key của provider được đắp lên trên.
-
-```
-~/.hccs/accounts/glm/
-├── .claude.json          # danh tính per-account (không có oauthAccount)
-├── .hccs-provider.json   # snapshot preset: endpoint và model nào
-├── settings.json         # FILE THẬT: settings chung + env provider, compose lại mỗi lần switch
-└── <mọi entry khác của ~/.claude>   # symlink, dùng chung như thường
-```
-
-Vì compose chạy lại mỗi lần switch, thay đổi trong `~/.claude/settings.json` vẫn chảy vào provider
-account. Chiều ngược lại thì không — xem mục Giới hạn.
+---
 
 ## Cài đặt
 
-**Qua npm:**
+**npm:**
 
 ```sh
 npm install -g @hoangnn23/hccs
-hccs setup-hook      # đăng ký hook attribution cho dashboard (một lần)
+hccs setup-hook      # một lần — attribution cho dashboard
 ```
 
 **Từ source:**
 
 ```sh
-git clone <repo-này> && cd <thư-mục-repo>
-./install.sh         # cài vào ~/.local/bin + tự đăng ký hook
+git clone https://github.com/nhathoang0110/hccs.git && cd hccs
+./install.sh         # ~/.local/bin + hook + dashboard + hccs-proxy.lib
 ```
 
-**Yêu cầu:** macOS hoặc Linux, `claude` trong PATH, `python3`.
-Ubuntu/Debian nếu thiếu: `sudo apt install python3`.
+**Cần có:** macOS hoặc Linux, [`claude`](https://claude.com/claude-code) trong `PATH`, `python3`.  
+Đường Codex lần đầu cần mạng để tải [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (hccs quản trong `~/.hccs/proxy`).
+
+---
+
+## Bắt đầu nhanh
+
+### 1) Nhiều account Claude (Anthropic)
+
+```sh
+hccs add work          # Claude hỏi login Anthropic
+hccs add personal
+
+hccs work              # dùng work
+hccs personal          # switch — không login lại
+hccs work --resume     # tiếp session (pool history chung)
+hccs list
+```
+
+### 2) GLM trong Claude Code
+
+```sh
+hccs glm               # lần đầu: dán API key z.ai (ẩn)
+hccs glm --resume
+hccs add cheap --provider glm
+hccs add-token glm     # xoay key
+```
+
+Key: [z.ai API keys](https://z.ai/manage-apikey/apikey-list).
+
+### 3) Codex / ChatGPT trong Claude Code (Claudex)
+
+**Quan trọng:** mỗi identity ChatGPT = một **proxy slot**.  
+Import `~/.codex/auth.json` hai lần với **y** = copy **cùng một** login vào hai slot.  
+Muốn ChatGPT **khác**: chọn **N** (OAuth browser), hoặc đổi login Codex CLI rồi mới import.
+
+```sh
+# Slot = một ChatGPT (auth 1 lần / slot)
+hccs codex-login default          # y = import ~/.codex ; N = OAuth browser
+hccs codex                        # account "codex" → pin slot default
+
+hccs codex-login work             # N → login ChatGPT khác
+hccs codex-work                   # account "codex-work" → pin slot work
+hccs codex-work --resume
+
+hccs add team --provider codex --slot work
+hccs team
+
+hccs proxy status|start|stop      # tuỳ chọn; tự start khi vào account codex
+```
+
+**Xóa slot lỡ import:**
+
+```sh
+rm -rf ~/.hccs/proxy/auth/<slot>
+hccs remove codex-<slot>   # nếu đã tạo account hccs tương ứng
+```
+
+### 4) Switch hàng ngày
+
+```sh
+hccs work                 # Claude / Anthropic
+hccs glm                  # GLM
+hccs codex-work           # Codex pin work
+hccs which
+hccs dashboard            # cost + trạng thái (codex hiện slot + email khi ready)
+```
+
+Flag giống nhau: `--resume`, `-c`, `-p "…"`, `--model …`, …
+
+---
+
+## Cơ chế
+
+Claude Code tôn trọng `CLAUDE_CONFIG_DIR`. hccs set per account:
+
+```text
+~/.hccs/accounts/<tên>/      # CLAUDE_CONFIG_DIR
+├── .claude.json             # identity per-account
+├── .credentials.json        # OAuth (Linux; macOS dùng Keychain)
+├── .hccs-provider.json      # chỉ provider (glm / codex)
+├── settings.json            # provider: file thật (settings chung + overlay)
+└── * → symlink ~/.claude    # agents, skills, hooks, projects, history
+```
+
+| Loại | Credential |
+|------|------------|
+| Claude OAuth | Slot Claude (`Claude Code-credentials-<hash>` trên macOS) |
+| GLM | API key Keychain / `.provider-token` → `ANTHROPIC_AUTH_TOKEN` |
+| Codex | OAuth ChatGPT trong `~/.hccs/proxy/auth/<slot>/` + gateway key local |
+
+Provider: mỗi lần switch **compose** lại `settings.json` (`ANTHROPIC_BASE_URL` + map model).  
+Sửa `~/.claude/settings.json` vẫn chảy vào; ghi *trong* session provider không bền (xem Giới hạn).
+
+Luồng Claudex:
+
+```text
+claude (qua hccs codex-*)
+  → ANTHROPIC_BASE_URL=http://127.0.0.1:8317
+  → CLIProxyAPI (hccs quản)
+  → OAuth ChatGPT của slot đang pin
+  → gpt-5.6-sol / terra / luna / …
+```
+
+---
 
 ## Lệnh
 
 | Lệnh | Mô tả |
-|------|-------|
-| `hccs <account> [claude args...]` | Chạy claude dưới account, passthrough mọi flag |
-| `hccs add <account> [claude args]` | Tạo account mới rồi login một lần |
-| `hccs add <account> --provider <preset>` | Tạo account dùng API key của provider (xem bên dưới) |
-| `hccs add-token <account>` | Lưu hoặc thay API key của provider account |
-| `hccs refresh-preset <account>` | Áp lại preset built-in, giữ nguyên key |
-| `hccs list` | Liệt kê account + email |
-| `hccs which` | Account dùng gần nhất |
-| `hccs remove <account>` | Xoá account (config dir + credential) |
-| `hccs dashboard [--port N]` | Mở dashboard usage/cost (localhost) |
-| `hccs setup-hook` | Đăng ký (lại) SessionStart hook attribution |
-| `hccs uninstall` | Gỡ sạch hccs, **không đụng** Claude mặc định |
-| `hccs -h` \| `--help` | Trợ giúp |
+|------|--------|
+| `hccs <account> [claude args…]` | Chạy Claude Code với account đó (passthrough flag) |
+| `hccs add <account>` | Tạo account + login Anthropic một lần |
+| `hccs add <account> --provider glm` | Account GLM (API key) |
+| `hccs add <account> --provider codex [--slot tên]` | Account Claudex pin slot |
+| `hccs add-token <account>` | Đổi key GLM — **không** dùng cho codex |
+| `hccs refresh-preset <account>` | Áp lại preset built-in, giữ credential |
+| `hccs codex-login [slot]` | Nạp OAuth ChatGPT vào slot (`--import-codex-home` non-interactive) |
+| `hccs proxy status\|start\|stop` | Quản CLIProxyAPI local |
+| `hccs list` / `hccs which` | Liệt kê / account vừa dùng |
+| `hccs remove <account>` | Xóa account (slot codex **giữ**) |
+| `hccs dashboard [--port N]` | UI usage & cost local |
+| `hccs setup-hook` | Đăng ký hook attribution |
+| `hccs uninstall` | Gỡ hccs; Claude mặc định nguyên |
+| `hccs -h` | Help |
 
-## Bắt đầu nhanh
+Shortcut tên:
 
-```sh
-hccs add work        # tạo + login account "work"
-hccs add personal    # tạo + login account "personal"
+- `hccs glm` → tạo provider `glm` lần đầu  
+- `hccs codex` → account `codex`, slot `default`  
+- `hccs codex-work` → account `codex-work`, slot `work`  
 
-hccs work            # dùng account work
-hccs personal        # đổi sang personal — KHÔNG cần login lại
-hccs list            # xem account + email
-```
+---
 
-Mỗi account login một lần duy nhất. Sau đó switch tức thì.
-
-## Dashboard usage & chi phí
+## Dashboard usage & cost
 
 ```sh
-hccs dashboard       # mở http://127.0.0.1:4780 (headless thì in URL)
+hccs dashboard       # http://127.0.0.1:4780 (chỉ localhost)
 ```
 
-Trang localhost (chỉ bind `127.0.0.1`) hiển thị **chi phí + token per-account** (hôm nay / 7 ngày / 30 ngày / tất cả), đồ thị stacked 30 ngày (toggle cost ↔ tokens), bảng theo model, panel auth read-only. Có theme sáng/tối. Chi phí là **API-equivalent USD** (quy theo giá API Anthropic — không phải bill subscription).
+Token & **USD quy đổi API** (không phải bill subscription), chart 30 ngày, breakdown model, auth panel.
 
-**Attribution hoạt động thế nào:** transcript trong `~/.claude/projects` không chứa danh tính account, nên `install.sh` đăng ký một **SessionStart hook** (`hccs-attribution-hook`) vào `~/.claude/settings.json` (backup trước lần sửa đầu, gỡ sạch khi uninstall). Mỗi lần mở session, hook ghi `(thời điểm, session_id, account)` vào `~/.hccs/usage/attribution.jsonl`; dashboard attribute từng message theo mốc thời gian — đúng cả khi account khác `--resume` session cũ. Session không rõ nguồn hiển thị là *unattributed*.
+- **Claude / GLM:** trạng thái login / API key  
+- **Codex:** `ready` khi có gateway + OAuth slot; hiện **slot + email ChatGPT**  
+- Attribution qua SessionStart hook → `~/.hccs/usage/attribution.jsonl`  
 
-- Máy đã cài hccs từ trước khi có dashboard? Chạy lại `./install.sh` (hoặc `hccs setup-hook`).
-- Giá model override qua `~/.hccs/pricing.json`: `{"claude-x": [in, out, w5m, w1h, read]}` (USD/1M token). Model của provider không có trong bảng built-in — thêm giá ở đây, lấy đúng tên model từ cột breakdown trong dashboard. Giá list của z.ai:
+Giá tuỳ chọn `~/.hccs/pricing.json` (USD / 1M token: in, out, cache write 5m/1h, cache read):
 
-  ```json
-  {
-    "glm-5.2": [1.40, 4.40, 1.40, 1.40, 0.26],
-    "glm-4.7": [0.60, 2.20, 0.60, 0.60, 0.11]
-  }
-  ```
+```json
+{
+  "glm-5.2": [1.40, 4.40, 1.40, 1.40, 0.26],
+  "glm-4.7": [0.60, 2.20, 0.60, 0.60, 0.11],
+  "gpt-5.6-luna": [0, 0, 0, 0, 0]
+}
+```
 
-  Model nào vẫn thiếu giá sẽ hiện trong banner ⚠ trên dashboard và được tính là 0.
-- Kết quả scan cache ở `~/.hccs/usage/cache.json` — mở lần sau gần như tức thì; `hccs-dashboard.py --rebuild` để scan lại từ đầu.
-- Hook được bọc để **không bao giờ** làm hỏng/chậm claude startup (exit 0 vô điều kiện, không network).
+Model thiếu giá = 0 + banner cảnh báo. Cache: `~/.hccs/usage/cache.json`.
 
-## Gỡ cài đặt
+---
+
+## Gỡ cài
 
 ```sh
 hccs uninstall
 ```
 
-Xoá `~/.hccs`, mọi Keychain token của account hccs, binary, dashboard (`~/.local/share/hccs`), dòng PATH, và gỡ SessionStart hook khỏi `settings.json` (chỉ đúng entry của hccs). **Không** chạm tới phần còn lại của `~/.claude`, `~/.claude.json`, hay account Claude mặc định.
+Stop proxy, xóa `~/.hccs` (kể cả slot OAuth + gateway), binary, share dashboard, dòng PATH, hook SessionStart.  
+**Không** đụng phần còn lại của `~/.claude`, login Claude mặc định, hay `~/.codex`.
+
+---
 
 ## Giới hạn
 
-- **macOS + Linux.** Chưa hỗ trợ Windows.
-- `.claude.json` tách riêng mỗi account: seed từ account mặc định (giữ trust-dialog/MCP), nhưng thay đổi trust/MCP-per-project về sau không tự đồng bộ giữa các account.
+- **Chỉ macOS + Linux.**  
+- `.claude.json` per-account seed một lần; trust/MCP sau đó không sync chéo account.  
+- Base URL không-Anthropic: MCP tool search & Remote Control tắt mặc định.  
+- `.claude/settings.json` của repo có thể đè settings account (hccs cảnh báo nếu set `ANTHROPIC_*`).  
+- Claudex là routing kiểu community qua proxy local — tự xem ToS OpenAI/Anthropic.  
+- History share → `--resume` session Anthropic dưới GLM/Codex = gửi transcript sang provider đó.
 
-Riêng provider account còn:
-
-- **MCP tool search và Remote Control bị tắt.** Claude Code tự tắt cả hai khi `ANTHROPIC_BASE_URL` trỏ tới host không phải first-party. Đặt `ENABLE_TOOL_SEARCH=true` để bật lại cái đầu.
-- **Settings sửa trong session provider không sống sót.** `settings.json` được compose lại từ file chung ở lần switch kế tiếp, nên permission grant hay thay đổi `/config` trong session provider sẽ mất. Muốn giữ thì đặt vào `~/.claude/settings.json`.
-- **`.claude/settings.json` của repo xếp trên settings của account.** Claude Code ưu tiên project/local settings hơn user settings, nên một repo có thể chiếm `ANTHROPIC_BASE_URL`. hccs cảnh báo khi thấy, nhưng không ghi đè được. Flag `--settings` bạn tự truyền cũng vậy.
-- Chi phí model `glm-*` hiển thị 0 cho tới khi bạn thêm giá vào `~/.hccs/pricing.json` — bảng giá built-in chỉ có model Anthropic.
+---
 
 ## An toàn
 
-- `hccs` chỉ **symlink** từ `~/.claude` (không ghi vào đó, trừ entry hook settings.json bạn đã đồng ý) và lưu dữ liệu trong `~/.hccs`.
-- `uninstall`/`remove` chỉ đụng credential của account hccs: trên macOS chỉ xoá Keychain slot **có hash** (slot mặc định `Claude Code-credentials` không bao giờ bị đụng); trên Linux credential nằm trong config dir nên mất theo đúng account đó.
-- `rm -rf ~/.hccs` chỉ xoá symlink, không follow vào `~/.claude`.
-- Dashboard chỉ bind `127.0.0.1` và validate `Host` header (chống DNS-rebinding). API chỉ lộ email + số liệu usage, không bao giờ lộ token.
+- hccs **symlink** từ `~/.claude`; data nằm `~/.hccs`.  
+- Keychain macOS chỉ xóa slot **có hash** của hccs — không đụng `Claude Code-credentials` mặc định.  
+- Dashboard chỉ bind `127.0.0.1`; API không trả token.  
+- Key/gateway nằm trong env process của claude và mọi con (hooks, MCP, Bash tool).  
+- Lần đầu vào provider account in disclosure một lần (history share + env).
 
-Hai điều nên biết trước khi dùng **provider account**. hccs in cả hai đúng một lần, ở lần đầu bạn
-switch vào:
-
-- **Lịch sử session dùng chung, nên `--resume` đi xuyên provider.** Đó chính là điểm hay của tính
-  năng — nhưng resume một session vốn tạo ra với Anthropic sẽ gửi lại **toàn bộ transcript** tới
-  endpoint của provider. Nếu một cuộc hội thoại có thứ bạn không muốn đưa cho bên thứ ba thì đừng
-  resume nó dưới provider account.
-- **API key hiện diện với mọi thứ claude khởi chạy.** Nó nằm trong biến môi trường của tiến trình,
-  mà mọi hook, plugin, MCP server, lệnh statusline — và cả Bash tool của chính model — đều kế thừa.
-  Đây là bản chất của cơ chế env-var mà các provider hướng dẫn; chỉ nên đưa vào provider account
-  những key bạn chấp nhận để lộ với đám tooling đang cài.
+---
 
 ## License
 

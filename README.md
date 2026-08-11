@@ -3,9 +3,10 @@
 
 # hccs
 
-**Switch Claude Code accounts instantly. Know exactly what each one spends.**
+**One CLI for many Claude Code identities — Anthropic, GLM, and Codex — switch instantly.**
 
-A thin wrapper around [`claude`](https://claude.com/claude-code) — one shared `~/.claude` (history, agents, skills, hooks), separate logins, and a local per-account **usage & cost dashboard**.
+Create as many accounts as you need, log in once each, then jump between them without re-auth.
+Use **real Claude** (Anthropic OAuth), **z.ai GLM** (API key), or **ChatGPT/Codex models inside the Claude Code harness** (Claudex via local CLIProxyAPI). Skills, agents, hooks, and session history stay shared; only credentials and provider endpoints change.
 
 [![npm](https://img.shields.io/npm/v/%40hoangnn23%2Fhccs?color=cb3837&logo=npm)](https://www.npmjs.com/package/@hoangnn23/hccs)
 [![CI](https://github.com/nhathoang0110/hccs/actions/workflows/ci.yml/badge.svg)](https://github.com/nhathoang0110/hccs/actions/workflows/ci.yml)
@@ -18,181 +19,240 @@ A thin wrapper around [`claude`](https://claude.com/claude-code) — one shared 
 </div>
 
 ```sh
-hccs work --resume        # run claude as account "work", every flag passes through
-hccs personal -p "hi"     # account "personal" — no re-login
-hccs glm                  # same, but through z.ai/GLM with an API key
-hccs codex                # Claudex: Claude Code harness + OpenAI/Codex models (local proxy)
-hccs dashboard            # per-account usage & cost, in your browser
+# Multi Claude (Anthropic) — login once per account, switch forever
+hccs add work && hccs add personal
+hccs work --resume
+hccs personal -p "review this PR"
+
+# Same Claude Code UI, different brains
+hccs glm                    # z.ai GLM (API key)
+hccs codex                  # OpenAI/Codex models via Claudex
+hccs codex-work --resume    # another ChatGPT account, pinned
+
+hccs list
+hccs dashboard              # per-account tokens & API-equivalent cost
 ```
 
-- 🔁 **Instant switching** — log in once per account, then `hccs <account>` just works
-- 🧰 **Full passthrough** — `hccs <account> [args...]` ≡ `claude [args...]` (`--resume`, `-c`, `-p`, ...)
-- 🤝 **Everything shared except auth** — agents, skills, hooks, settings, session history
-- 🔌 **Other providers too** — `hccs glm` (z.ai API key) and `hccs codex` (ChatGPT/Codex via CLIProxyAPI)
-- 📊 **Accurate cost tracking** — per-account attribution, correct even across cross-account `--resume`
-- 🧹 **Clean uninstall** — your default Claude setup is never touched
+| You want… | Command pattern |
+|-----------|-----------------|
+| Several Anthropic subscriptions / teams | `hccs add <name>` → `hccs <name>` |
+| GLM inside Claude Code | `hccs glm` (or `hccs add myglm --provider glm`) |
+| Codex/GPT models inside Claude Code | `hccs codex-login` → `hccs codex` / `hccs codex-<slot>` |
+| Switch without re-login | `hccs work` · `hccs glm` · `hccs codex-shuei` |
+| Resume a past session | `hccs <any-account> --resume` (history is shared) |
+| See spend per identity | `hccs dashboard` |
+
+- 🔁 **Multi-account switcher** — as many identities as you need; auth once, switch forever  
+- 🧠 **Three backends in one harness** — Anthropic Claude · GLM (z.ai) · Codex/ChatGPT (Claudex)  
+- 🧰 **Full passthrough** — `hccs <account> [args...]` ≡ `claude [args...]` (`--resume`, `-c`, `-p`, …)  
+- 🤝 **Shared workspace** — agents, skills, hooks, plugins, projects, session history  
+- 📊 **Usage dashboard** — per-account attribution, including cross-account resume  
+- 🧹 **Clean uninstall** — default Claude install left alone  
 
 ![hccs dashboard](docs/assets/dashboard-dark.png)
 
-## How it works
+---
 
-Claude Code supports the `CLAUDE_CONFIG_DIR` environment variable. When set, Claude keeps a separate **`.claude.json`** (account identity) **and separate credentials** per config dir.
+## Mental model
 
-`hccs` builds on exactly that built-in mechanism: each account is its own config dir under `~/.hccs/accounts/<name>`, with **everything in `~/.claude`** (agents, skills, hooks, commands, settings, projects, history) **symlinked in**. The result: **only authentication is separate** — everything else is shared, including session history (`--resume` sees sessions started under other accounts).
-
-```
-~/.hccs/accounts/<account>/       # = CLAUDE_CONFIG_DIR
-├── .claude.json                 # PER-ACCOUNT: identity (seeded from ~/.claude.json, minus oauthAccount)
-├── .credentials.json            # PER-ACCOUNT: token (Linux only — macOS uses the Keychain)
-└── <every entry of ~/.claude>   # symlink → shared
-```
-
-### Where credentials live (per OS)
-
-| OS | Token storage | Consequence |
-|----|---------------|-------------|
-| **macOS** | Keychain, slot `Claude Code-credentials-<sha256(configDir)[:8]>` | Outside the config dir → `remove`/`uninstall` must delete the slot (hccs does) |
-| **Linux** | File `<configDir>/.credentials.json` | Inside the config dir → isolated automatically, removed with the dir |
-| **Provider accounts, macOS** | Keychain, slot `hccs-provider-<sha256(configDir)[:8]>` | Written by hccs; hashed on the config dir so two `HCCS_HOME` trees never collide |
-| **Provider accounts, Linux** | File `<configDir>/.provider-token`, mode `600` | Removed with the dir |
-
-For OAuth accounts `hccs` never reads or writes tokens — Claude manages them per
-`CLAUDE_CONFIG_DIR`. For **provider accounts** it does: the API key you paste is stored in the
-Keychain (or a `600` file) and exported as `ANTHROPIC_AUTH_TOKEN` when launching claude. It is never
-written into `settings.json`, and never passed as a command-line argument.
-
-## Provider accounts
-
-A provider account runs Claude Code against an Anthropic-compatible endpoint using an API key
-instead of an Anthropic login. Everything else still behaves like a normal hccs account — same
-shared agents, skills, hooks, and session history.
-
-```sh
-hccs glm                     # first run asks for the z.ai API key, then just runs
-hccs glm --resume            # flags pass through as usual
-hccs add myglm --provider glm  # same preset under a different account name
-hccs add-token glm           # replace a rotated or revoked key
-hccs refresh-preset glm      # re-apply the built-in preset after an hccs upgrade
+```text
+                    ┌─────────────────────────────────────┐
+                    │         Claude Code harness         │
+                    │   tools · skills · hooks · resume   │
+                    └──────────────┬──────────────────────┘
+                                   │  hccs <account>
+           ┌───────────────────────┼───────────────────────┐
+           ▼                       ▼                       ▼
+    Anthropic OAuth            z.ai GLM              ChatGPT / Codex
+    (hccs work)              (hccs glm)            (hccs codex-*)
+    multi Claude logins      API key once          multi OAuth slots
 ```
 
-Available presets:
+Every **hccs account** is a named profile under `~/.hccs/accounts/<name>`.  
+Switching only changes **who authenticates** and **which API endpoint/models** run — not your project files or skill library.
 
-| Preset | Backend | Auth |
-|--------|---------|------|
-| `glm` | z.ai Anthropic-compatible API | API key (prompt once) |
-| `codex` | Local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) → ChatGPT/Codex OAuth | `hccs codex-login` (import `~/.codex` or browser OAuth) |
+| Account kind | Example names | Auth (once) | Models |
+|--------------|---------------|-------------|--------|
+| **Claude (OAuth)** | `work`, `personal` | Anthropic login in Claude | Claude family |
+| **GLM (API key)** | `glm`, `myglm` | Paste z.ai key once | `glm-*` |
+| **Codex / Claudex** | `codex`, `codex-work` | `hccs codex-login <slot>` | `gpt-5.6-sol` / `terra` / `luna` · … |
 
-### Claudex (`hccs codex`)
-
-Runs **Claude Code** (tools, skills, `--resume`) with **OpenAI models** such as `gpt-5.6-sol` /
-`terra` / `luna`. hccs downloads and manages CLIProxyAPI under `~/.hccs/proxy`, pins one ChatGPT
-OAuth **slot** per account, and restarts the proxy when the pin changes.
-
-```sh
-hccs codex-login              # import ~/.codex or OAuth → slot "default"
-hccs codex                    # account "codex", slot default
-hccs codex-login work         # another ChatGPT account → slot "work"
-hccs codex-work --resume      # pin slot work (multi-account)
-hccs proxy status|start|stop  # debug the local proxy (auto-started on codex)
-```
-
-**Safety:** session history is shared across accounts — resuming an Anthropic session under `codex`
-sends that transcript to OpenAI via the proxy. The gateway key is in the process environment (same
-blast radius as other provider tokens). This path is community/Claudex-style routing; check provider
-terms for your use case. `hccs remove codex-work` deletes the hccs account only — OAuth slots under
-`~/.hccs/proxy/auth/` are kept. Uninstall stops the proxy and removes `~/.hccs` (not `~/.codex`).
-
-Get a z.ai key for GLM at [z.ai](https://z.ai/manage-apikey/apikey-list).
-
-**How it differs under the hood.** A settings `env` block outranks the process environment in
-Claude Code, so the endpoint and model mapping cannot simply be exported — they have to live in the
-account's own `settings.json`. hccs therefore gives a provider account a **real** `settings.json`,
-recomposed on every switch from your shared `~/.claude/settings.json` plus the preset's env. Your
-hooks, permissions, statusline, and plugins carry over; only the provider keys are layered on top.
-
-```
-~/.hccs/accounts/glm/
-├── .claude.json          # per-account identity (no oauthAccount)
-├── .hccs-provider.json   # preset snapshot: which endpoint and models
-├── settings.json         # REAL file: shared settings + provider env, recomposed each switch
-└── <every other entry of ~/.claude>   # symlinked, shared as usual
-```
-
-Because the composition re-runs on every switch, edits to `~/.claude/settings.json` keep flowing
-into provider accounts. The reverse is not true — see Limitations.
+---
 
 ## Install
 
-**Via npm:**
+**npm:**
 
 ```sh
 npm install -g @hoangnn23/hccs
-hccs setup-hook      # register the dashboard attribution hook (once)
+hccs setup-hook      # once — attribution for the dashboard
 ```
 
 **From source:**
 
 ```sh
-git clone <this-repo> && cd <repo-dir>
-./install.sh         # installs into ~/.local/bin + registers the hook
+git clone https://github.com/nhathoang0110/hccs.git && cd hccs
+./install.sh         # ~/.local/bin + hook + dashboard assets + hccs-proxy.lib
 ```
 
-**Requirements:** macOS or Linux, `claude` in PATH, `python3`.
-On Ubuntu/Debian: `sudo apt install python3` if missing.
+**Requirements:** macOS or Linux, [`claude`](https://claude.com/claude-code) on `PATH`, `python3`.  
+Codex path also needs network once to download [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (managed under `~/.hccs/proxy`).
+
+---
+
+## Quick start
+
+### 1) Multi Claude accounts (Anthropic)
+
+```sh
+hccs add work          # Claude prompts Anthropic login
+hccs add personal
+
+hccs work              # use work
+hccs personal          # switch — no re-login
+hccs work --resume     # continue a session (shared history pool)
+hccs list
+```
+
+### 2) GLM inside Claude Code
+
+```sh
+hccs glm               # first run: paste z.ai API key (hidden)
+hccs glm --resume
+hccs add cheap --provider glm   # same preset, another name
+hccs add-token glm              # rotate key
+```
+
+Key: [z.ai API keys](https://z.ai/manage-apikey/apikey-list).
+
+### 3) Codex / ChatGPT models inside Claude Code (Claudex)
+
+**Important:** each ChatGPT identity is a **proxy slot**. Importing `~/.codex/auth.json` twice with **y** copies the *same* login into two slots. For a *different* ChatGPT account, decline import and use browser OAuth, or change the active Codex CLI login before import.
+
+```sh
+# Slot = one ChatGPT identity (auth once per slot)
+hccs codex-login default          # y = import current ~/.codex ; N = OAuth browser
+hccs codex                        # account "codex" → pin slot default
+
+hccs codex-login work             # N → login another ChatGPT
+hccs codex-work                   # account "codex-work" → pin slot work
+hccs codex-work --resume
+
+# Explicit names
+hccs add team --provider codex --slot work
+hccs team
+
+hccs proxy status|start|stop      # optional; auto-started when you enter a codex account
+```
+
+**Delete a mistaken slot** (OAuth files only; does not remove Anthropic accounts):
+
+```sh
+rm -rf ~/.hccs/proxy/auth/<slot>
+# if you also created hccs account codex-<slot>:
+hccs remove codex-<slot>
+```
+
+### 4) Day-to-day switching
+
+```sh
+hccs work                 # Claude / Anthropic
+hccs glm                  # GLM
+hccs codex-work           # Codex pin work
+hccs which                # last used account
+hccs dashboard            # costs & readiness (codex shows slot + email when ready)
+```
+
+Same flags everywhere: `--resume`, `-c`, `-p "…"`, `--model …`, etc.
+
+---
+
+## How it works
+
+Claude Code respects `CLAUDE_CONFIG_DIR`. hccs sets that per account:
+
+```text
+~/.hccs/accounts/<name>/     # CLAUDE_CONFIG_DIR
+├── .claude.json             # per-account identity
+├── .credentials.json        # OAuth token (Linux; macOS uses Keychain)
+├── .hccs-provider.json      # provider accounts only (glm / codex marker)
+├── settings.json            # provider: real file (shared settings + overlay)
+└── * → symlink into ~/.claude   # agents, skills, hooks, projects, history
+```
+
+| Kind | Credentials |
+|------|-------------|
+| Claude OAuth | Claude’s own slots (`Claude Code-credentials-<hash>` on macOS) |
+| GLM | API key in Keychain / `.provider-token` → `ANTHROPIC_AUTH_TOKEN` |
+| Codex | ChatGPT OAuth under `~/.hccs/proxy/auth/<slot>/`; local gateway key for Claude→proxy |
+
+Provider accounts get a **composed** `settings.json` each switch (`ANTHROPIC_BASE_URL` + model maps). Shared edits in `~/.claude/settings.json` keep flowing in; writes *inside* a provider session do not stick (see Limitations).
+
+Claudex flow:
+
+```text
+claude (via hccs codex-*)
+  → ANTHROPIC_BASE_URL=http://127.0.0.1:8317
+  → CLIProxyAPI (hccs-managed)
+  → ChatGPT/Codex OAuth for the pinned slot
+  → gpt-5.6-sol / terra / luna / …
+```
+
+---
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `hccs <account> [claude args...]` | Run claude as the account, all flags pass through |
-| `hccs add <account> [claude args]` | Create a new account, then log in once |
-| `hccs add <account> --provider <preset>` | Create an API-key account for a provider (see below) |
-| `hccs add-token <account>` | Store or replace a provider account's API key |
-| `hccs refresh-preset <account>` | Re-apply the built-in preset, keeping the key |
-| `hccs list` | List accounts and emails |
-| `hccs which` | Most recently used account |
-| `hccs remove <account>` | Delete an account (config dir + credentials) |
-| `hccs dashboard [--port N]` | Open the usage/cost dashboard (localhost) |
-| `hccs setup-hook` | (Re-)register the SessionStart attribution hook |
-| `hccs uninstall` | Remove hccs completely, **default Claude untouched** |
-| `hccs -h` \| `--help` | Help |
+| `hccs <account> [claude args…]` | Run Claude Code as that account (all flags pass through) |
+| `hccs add <account>` | Create account + Anthropic login once |
+| `hccs add <account> --provider glm` | Create GLM API-key account |
+| `hccs add <account> --provider codex [--slot name]` | Create Claudex account pinned to a slot |
+| `hccs add-token <account>` | Replace GLM (API-key) token — not used for codex |
+| `hccs refresh-preset <account>` | Re-apply built-in preset env, keep credentials |
+| `hccs codex-login [slot]` | Load ChatGPT OAuth into a proxy slot (`--import-codex-home` non-interactive) |
+| `hccs proxy status\|start\|stop` | Manage local CLIProxyAPI |
+| `hccs list` / `hccs which` | List accounts / show last used |
+| `hccs remove <account>` | Delete account dir + its credentials (codex **slots** kept) |
+| `hccs dashboard [--port N]` | Local usage & cost UI |
+| `hccs setup-hook` | Register SessionStart attribution hook |
+| `hccs uninstall` | Remove hccs data/binaries; default Claude untouched |
+| `hccs -h` | Help |
 
-## Quick start
+Name shortcuts:
 
-```sh
-hccs add work        # create + log in account "work"
-hccs add personal    # create + log in account "personal"
+- `hccs glm` → first-run creates provider `glm`  
+- `hccs codex` → account `codex`, slot `default`  
+- `hccs codex-work` → account `codex-work`, slot `work`  
 
-hccs work            # use account work
-hccs personal        # switch to personal — NO re-login
-hccs list            # accounts + emails
-```
-
-Each account logs in once. After that, switching is instant.
+---
 
 ## Usage & cost dashboard
 
 ```sh
-hccs dashboard       # opens http://127.0.0.1:4780 (prints the URL when headless)
+hccs dashboard       # http://127.0.0.1:4780 (localhost only)
 ```
 
-A localhost page (bound to `127.0.0.1` only) showing **per-account cost and tokens** (today / 7 days / 30 days / all time), a 30-day stacked chart (cost ↔ tokens toggle), a per-model breakdown, and a read-only auth panel. Light and dark themes. Costs are **API-equivalent USD** (computed from Anthropic API prices — not your subscription bill).
+Per-account tokens & **API-equivalent USD** (not subscription bills), 30-day chart, model breakdown, auth panel.
 
-**How attribution works:** transcripts in `~/.claude/projects` carry no account identity, so `install.sh` registers a **SessionStart hook** (`hccs-attribution-hook`) in `~/.claude/settings.json` (backed up before the first edit, fully removed on uninstall). On every session start the hook appends `(timestamp, session_id, account)` to `~/.hccs/usage/attribution.jsonl`; the dashboard attributes each message by time interval — correct even when another account `--resume`s an existing session. Sessions with unknown origin are shown as *unattributed*.
+- **Claude / GLM cards:** login or API-key readiness  
+- **Codex cards:** `ready` when gateway + slot OAuth exist; shows **slot + ChatGPT email**  
+- Attribution via SessionStart hook → `~/.hccs/usage/attribution.jsonl` (works across `--resume`)  
 
-- Machine installed before the dashboard existed? Run `./install.sh` again (or `hccs setup-hook`).
-- Model prices can be overridden via `~/.hccs/pricing.json`: `{"claude-x": [in, out, w5m, w1h, read]}` (USD per 1M tokens). Provider models are not in the built-in table — price them here, using the exact model name from the dashboard's per-model breakdown. For z.ai list prices:
+Optional prices in `~/.hccs/pricing.json` (USD per 1M tokens: in, out, cache write 5m/1h, cache read):
 
-  ```json
-  {
-    "glm-5.2": [1.40, 4.40, 1.40, 1.40, 0.26],
-    "glm-4.7": [0.60, 2.20, 0.60, 0.60, 0.11]
-  }
-  ```
+```json
+{
+  "glm-5.2": [1.40, 4.40, 1.40, 1.40, 0.26],
+  "glm-4.7": [0.60, 2.20, 0.60, 0.60, 0.11],
+  "gpt-5.6-luna": [0, 0, 0, 0, 0]
+}
+```
 
-  Anything still missing a price is listed under the ⚠ banner on the dashboard and counted as 0.
-- Scan results are cached in `~/.hccs/usage/cache.json` — subsequent opens are near-instant; `hccs-dashboard.py --rebuild` rescans from scratch.
-- The hook is wrapped so it can **never** fail or slow down claude startup (unconditional exit 0, no network).
+Missing models show under the dashboard warning banner and cost **0** until priced.  
+Cache: `~/.hccs/usage/cache.json` (`hccs-dashboard.py --rebuild` to rescan).
+
+---
 
 ## Uninstall
 
@@ -200,38 +260,30 @@ A localhost page (bound to `127.0.0.1` only) showing **per-account cost and toke
 hccs uninstall
 ```
 
-Removes `~/.hccs`, every hccs account's Keychain token, the binaries, the dashboard (`~/.local/share/hccs`), the PATH line, and the SessionStart hook from `settings.json` (only the hccs entry). Does **not** touch the rest of `~/.claude`, `~/.claude.json`, or the default Claude account.
+Stops the local proxy, removes `~/.hccs` (including proxy OAuth slots and gateway keys), binaries, dashboard share files, PATH line, and the hccs SessionStart hook. Does **not** touch the rest of `~/.claude`, default Claude login, or `~/.codex`.
+
+---
 
 ## Limitations
 
-- **macOS + Linux.** No Windows support.
-- `.claude.json` is per-account: it is seeded from the default account (keeping trust dialogs/MCP), but later per-project trust/MCP changes do not sync between accounts.
+- **macOS + Linux only** (no Windows).  
+- Per-account `.claude.json` is seeded once; later trust/MCP tweaks do not sync across accounts.  
+- Provider / non-Anthropic base URL: MCP tool search & Remote Control off by default (`ENABLE_TOOL_SEARCH=true` can re-enable search).  
+- Repo `.claude/settings.json` can override account settings (hccs warns if it sets `ANTHROPIC_*`).  
+- Claudex is community-style routing through a local proxy — review OpenAI/Anthropic terms for your use case.  
+- Shared history means `--resume` can send an Anthropic transcript to GLM or OpenAI when you resume under those accounts.
 
-Provider accounts additionally:
-
-- **MCP tool search and Remote Control are off.** Claude Code disables both when `ANTHROPIC_BASE_URL` points at a non-first-party host. Set `ENABLE_TOOL_SEARCH=true` to re-enable the former.
-- **Settings written inside a provider session do not survive.** `settings.json` is recomposed from the shared file on the next switch, so a permission grant or `/config` change made in a provider session is dropped. Put anything you want to keep in `~/.claude/settings.json`.
-- **A repo's `.claude/settings.json` outranks the account's.** Claude Code ranks project and local settings above user settings, so a repo can capture `ANTHROPIC_BASE_URL`. hccs warns when it sees that, but cannot override it. The same applies to a `--settings` flag you pass yourself.
-- Cost for `glm-*` models shows as 0 until you add prices to `~/.hccs/pricing.json` — the built-in table only covers Anthropic models.
+---
 
 ## Safety
 
-- `hccs` only **symlinks** from `~/.claude` (it never writes there except the opt-in settings.json hook entry) and keeps its data in `~/.hccs`.
-- `uninstall`/`remove` only touch hccs account credentials: on macOS only the **hash-suffixed** Keychain slots are deleted (the default `Claude Code-credentials` slot is never touched); on Linux credentials live inside the account dir and are removed with it.
-- `rm -rf ~/.hccs` removes symlinks only — it never follows them into `~/.claude`.
-- The dashboard binds `127.0.0.1` only and validates the `Host` header (DNS-rebinding protection). The API exposes emails and usage numbers, never tokens.
+- hccs **symlinks** from `~/.claude`; data lives under `~/.hccs`.  
+- macOS Keychain deletes only **hash-suffixed** hccs slots — never the default `Claude Code-credentials` entry.  
+- Dashboard binds `127.0.0.1` only; API never returns tokens.  
+- Provider keys / gateway tokens sit in the process environment of claude and every child (hooks, MCP, Bash tool). Use keys you accept for that blast radius.  
+- First switch into a provider account prints a one-time disclosure about shared history and env visibility.
 
-Two things worth knowing before you use a **provider account**. hccs prints both once, the first time
-you switch into one:
-
-- **Session history is shared, so `--resume` crosses providers.** That is the point of the feature —
-  but resuming a session that was created against Anthropic replays its **entire transcript** to the
-  provider's endpoint. If a conversation contains something you would not send to a third party,
-  don't resume it under a provider account.
-- **The API key is visible to everything claude starts.** It lives in the process environment, which
-  every hook, plugin, MCP server, statusline command — and the model's own Bash tool — inherits.
-  This is inherent to the env-var mechanism the providers document; only give a provider account keys
-  you are willing to expose to the tooling you have installed.
+---
 
 ## License
 
