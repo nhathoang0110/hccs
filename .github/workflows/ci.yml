@@ -11,6 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: shellcheck
-        run: shellcheck hccs install.sh hccs-attribution-hook
+        run: shellcheck -x hccs hccs-proxy.lib install.sh hccs-attribution-hook
       - name: python compile
         run: python3 -m py_compile hccs-dashboard.py

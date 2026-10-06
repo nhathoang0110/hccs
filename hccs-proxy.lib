@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # hccs-proxy.lib — CLIProxyAPI / Claudex support for hccs
 # Sourced by `hccs` (not a standalone executable).
 # Requires: die, info, warn, confirm, have_tty, HCCS_* env vars.
