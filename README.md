@@ -3,10 +3,10 @@
 
 # hccs
 
-**One CLI for many Claude Code identities — Anthropic, GLM, and Codex — switch instantly.**
+**One CLI for many Claude Code identities — Anthropic, GLM, DeepSeek, and Codex — switch instantly.**
 
 Create as many accounts as you need, log in once each, then jump between them without re-auth.
-Use **real Claude** (Anthropic OAuth), **z.ai GLM** (API key), or **ChatGPT/Codex models inside the Claude Code harness** (Claudex via local CLIProxyAPI). Skills, agents, hooks, and session history stay shared; only credentials and provider endpoints change.
+Use **real Claude** (Anthropic OAuth), **z.ai GLM** (API key), **DeepSeek V4.1 Flash** (OpenCode Go key, local proxy), or **ChatGPT/Codex models inside the Claude Code harness** (Claudex via local CLIProxyAPI). Skills, agents, hooks, and session history stay shared; only credentials and provider endpoints change.
 
 [![npm](https://img.shields.io/npm/v/%40hoangnn23%2Fhccs?color=cb3837&logo=npm)](https://www.npmjs.com/package/@hoangnn23/hccs)
 [![CI](https://github.com/nhathoang0110/hccs/actions/workflows/ci.yml/badge.svg)](https://github.com/nhathoang0110/hccs/actions/workflows/ci.yml)
@@ -26,6 +26,7 @@ hccs personal -p "review this PR"
 
 # Same Claude Code UI, different brains
 hccs glm                    # z.ai GLM (API key)
+hccs ds                     # DeepSeek V4.1 Flash via OpenCode Go
 hccs codex                  # OpenAI/Codex models via Claudex
 hccs codex-work --resume    # another ChatGPT account, pinned
 
@@ -37,13 +38,14 @@ hccs dashboard              # per-account tokens & API-equivalent cost
 |-----------|-----------------|
 | Several Anthropic subscriptions / teams | `hccs add <name>` → `hccs <name>` |
 | GLM inside Claude Code | `hccs glm` (or `hccs add myglm --provider glm`) |
+| DeepSeek inside Claude Code | `hccs ds` (OpenCode Go key, local proxy) |
 | Codex/GPT models inside Claude Code | `hccs codex-login` → `hccs codex` / `hccs codex-<slot>` |
-| Switch without re-login | `hccs work` · `hccs glm` · `hccs codex-shuei` |
+| Switch without re-login | `hccs work` · `hccs glm` · `hccs ds` · `hccs codex-shuei` |
 | Resume a past session | `hccs <any-account> --resume` (history is shared) |
 | See spend per identity | `hccs dashboard` |
 
 - 🔁 **Multi-account switcher** — as many identities as you need; auth once, switch forever  
-- 🧠 **Three backends in one harness** — Anthropic Claude · GLM (z.ai) · Codex/ChatGPT (Claudex)  
+- 🧠 **Four backends in one harness** — Anthropic Claude · GLM (z.ai) · DeepSeek (OpenCode Go) · Codex/ChatGPT (Claudex)  
 - 🧰 **Full passthrough** — `hccs <account> [args...]` ≡ `claude [args...]` (`--resume`, `-c`, `-p`, …)  
 - 🤝 **Shared workspace** — agents, skills, hooks, plugins, projects, session history  
 - 📊 **Usage dashboard** — per-account attribution, including cross-account resume  
@@ -63,9 +65,9 @@ hccs dashboard              # per-account tokens & API-equivalent cost
                                    │  hccs <account>
            ┌───────────────────────┼───────────────────────┐
            ▼                       ▼                       ▼
-    Anthropic OAuth            z.ai GLM              ChatGPT / Codex
-    (hccs work)              (hccs glm)            (hccs codex-*)
-    multi Claude logins      API key once          multi OAuth slots
+    Anthropic OAuth       GLM / DeepSeek           ChatGPT / Codex
+    (hccs work)            (hccs glm / ds)         (hccs codex-*)
+    multi Claude logins     API key once           multi OAuth slots
 ```
 
 Every **hccs account** is a named profile under `~/.hccs/accounts/<name>`.  
@@ -75,6 +77,7 @@ Switching only changes **who authenticates** and **which API endpoint/models** r
 |--------------|---------------|-------------|--------|
 | **Claude (OAuth)** | `work`, `personal` | Anthropic login in Claude | Claude family |
 | **GLM (API key)** | `glm`, `myglm` | Paste z.ai key once | `glm-*` |
+| **DeepSeek (OpenCode Go)** | `ds`, `myds` | Paste OpenCode Go key once | `deepseek-v4.1-flash` |
 | **Codex / Claudex** | `codex`, `codex-work` | `hccs codex-login <slot>` | `gpt-5.6-sol` / `terra` / `luna` · … |
 
 ---
@@ -96,7 +99,7 @@ git clone https://github.com/nhathoang0110/hccs.git && cd hccs
 ```
 
 **Requirements:** macOS or Linux, [`claude`](https://claude.com/claude-code) on `PATH`, `python3`.  
-Codex path also needs network once to download [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (managed under `~/.hccs/proxy`).
+Codex and DeepSeek paths also need network once to download [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (managed under `~/.hccs/proxy`). They share that proxy: switching rewrites its config and restarts it.
 
 ---
 
@@ -125,7 +128,25 @@ hccs add-token glm              # rotate key
 
 Key: [z.ai API keys](https://z.ai/manage-apikey/apikey-list).
 
-### 3) Codex / ChatGPT models inside Claude Code (Claudex)
+### 3) DeepSeek V4.1 Flash through OpenCode Go
+
+Subscribe to [OpenCode Go](https://opencode.ai/docs/go/), copy its API key, then:
+
+```sh
+hccs ds                         # first run: paste the OpenCode Go key (hidden)
+hccs ds --resume
+hccs add myds --provider ds     # same preset, another name
+hccs add-token ds               # rotate key
+hccs refresh-preset ds          # re-apply the preset after an hccs upgrade
+```
+
+OpenCode Go serves `deepseek-v4.1-flash` as OpenAI Chat Completions (`/v1/chat/completions`). Claude Code speaks Anthropic `/v1/messages`. The direct env recipe in [Kristof Kovacs's guide](https://kkovacs.eu/opencode-go-with-claude-code/) only covers OpenCode models marked `@ai-sdk/anthropic`; DeepSeek is `@ai-sdk/openai-compatible`. hccs translates locally with [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), forwards Claude Code's session header as `x-opencode-session`, and pins every Claude alias to `deepseek-v4.1-flash`.
+
+The OpenCode key stays in the Keychain or a mode-`600` token file, and in the generated mode-`600` proxy config. Claude Code receives only the localhost gateway key. The model catalog can change; `hccs refresh-preset ds` updates an existing account after hccs changes the preset.
+
+Key: [OpenCode console](https://opencode.ai/auth).
+
+### 4) Codex / ChatGPT models inside Claude Code (Claudex)
 
 **Important:** each ChatGPT identity is a **proxy slot**. Importing `~/.codex/auth.json` twice with **y** copies the *same* login into two slots. For a *different* ChatGPT account, decline import and use browser OAuth, or change the active Codex CLI login before import.
 
@@ -142,7 +163,7 @@ hccs codex-work --resume
 hccs add team --provider codex --slot work
 hccs team
 
-hccs proxy status|start|stop      # optional; auto-started when you enter a codex account
+hccs proxy status|start|stop      # optional; auto-started for codex and ds
 ```
 
 **Delete a mistaken slot** (OAuth files only; does not remove Anthropic accounts):
@@ -153,11 +174,12 @@ rm -rf ~/.hccs/proxy/auth/<slot>
 hccs remove codex-<slot>
 ```
 
-### 4) Day-to-day switching
+### 5) Day-to-day switching
 
 ```sh
 hccs work                 # Claude / Anthropic
 hccs glm                  # GLM
+hccs ds                   # DeepSeek / OpenCode Go
 hccs codex-work           # Codex pin work
 hccs which                # last used account
 hccs dashboard            # costs & readiness (codex shows slot + email when ready)
@@ -175,7 +197,7 @@ Claude Code respects `CLAUDE_CONFIG_DIR`. hccs sets that per account:
 ~/.hccs/accounts/<name>/     # CLAUDE_CONFIG_DIR
 ├── .claude.json             # per-account identity
 ├── .credentials.json        # OAuth token (Linux; macOS uses Keychain)
-├── .hccs-provider.json      # provider accounts only (glm / codex marker)
+├── .hccs-provider.json      # provider accounts only (glm / ds / codex marker)
 ├── settings.json            # provider: real file (shared settings + overlay)
 └── * → symlink into ~/.claude   # agents, skills, hooks, projects, history
 ```
@@ -184,9 +206,20 @@ Claude Code respects `CLAUDE_CONFIG_DIR`. hccs sets that per account:
 |------|-------------|
 | Claude OAuth | Claude’s own slots (`Claude Code-credentials-<hash>` on macOS) |
 | GLM | API key in Keychain / `.provider-token` → `ANTHROPIC_AUTH_TOKEN` |
+| DeepSeek | OpenCode Go key in Keychain / `.provider-token`; Claude receives only the localhost gateway key |
 | Codex | ChatGPT OAuth under `~/.hccs/proxy/auth/<slot>/`; local gateway key for Claude→proxy |
 
 Provider accounts get a **composed** `settings.json` each switch (`ANTHROPIC_BASE_URL` + model maps). Shared edits in `~/.claude/settings.json` keep flowing in; writes *inside* a provider session do not stick (see Limitations).
+
+DeepSeek flow:
+
+```text
+claude (via hccs ds)
+  → ANTHROPIC_BASE_URL=http://127.0.0.1:8317
+  → CLIProxyAPI (hccs-managed, Claude Messages → OpenAI Chat Completions)
+  → https://opencode.ai/zen/go/v1
+  → deepseek-v4.1-flash
+```
 
 Claudex flow:
 
@@ -207,8 +240,9 @@ claude (via hccs codex-*)
 | `hccs <account> [claude args…]` | Run Claude Code as that account (all flags pass through) |
 | `hccs add <account>` | Create account + Anthropic login once |
 | `hccs add <account> --provider glm` | Create GLM API-key account |
+| `hccs add <account> --provider ds` | Create DeepSeek/OpenCode Go account |
 | `hccs add <account> --provider codex [--slot name]` | Create Claudex account pinned to a slot |
-| `hccs add-token <account>` | Replace GLM (API-key) token — not used for codex |
+| `hccs add-token <account>` | Replace a GLM or DeepSeek API key — not used for codex |
 | `hccs refresh-preset <account>` | Re-apply built-in preset env, keep credentials |
 | `hccs codex-login [slot]` | Load ChatGPT OAuth into a proxy slot (`--import-codex-home` non-interactive) |
 | `hccs proxy status\|start\|stop` | Manage local CLIProxyAPI |
@@ -222,6 +256,7 @@ claude (via hccs codex-*)
 Name shortcuts:
 
 - `hccs glm` → first-run creates provider `glm`  
+- `hccs ds` → first-run creates provider `ds` (OpenCode Go key)  
 - `hccs codex` → account `codex`, slot `default`  
 - `hccs codex-work` → account `codex-work`, slot `work`  
 
@@ -270,8 +305,9 @@ Stops the local proxy, removes `~/.hccs` (including proxy OAuth slots and gatewa
 - Per-account `.claude.json` is seeded once; later trust/MCP tweaks do not sync across accounts.  
 - Provider / non-Anthropic base URL: MCP tool search & Remote Control off by default (`ENABLE_TOOL_SEARCH=true` can re-enable search).  
 - Repo `.claude/settings.json` can override account settings (hccs warns if it sets `ANTHROPIC_*`).  
-- Claudex is community-style routing through a local proxy — review OpenAI/Anthropic terms for your use case.  
-- Shared history means `--resume` can send an Anthropic transcript to GLM or OpenAI when you resume under those accounts.
+- Claudex and DeepSeek are community-style routing through a local proxy — review OpenAI, OpenCode, and Anthropic terms for your use case.  
+- `ds` and `codex` share one CLIProxyAPI process. Entering the other preset rewrites `~/.hccs/proxy/config.yaml` and restarts it.  
+- Shared history means `--resume` can send an Anthropic transcript to GLM, OpenCode, or OpenAI when you resume under those accounts.
 
 ---
 
@@ -280,7 +316,7 @@ Stops the local proxy, removes `~/.hccs` (including proxy OAuth slots and gatewa
 - hccs **symlinks** from `~/.claude`; data lives under `~/.hccs`.  
 - macOS Keychain deletes only **hash-suffixed** hccs slots — never the default `Claude Code-credentials` entry.  
 - Dashboard binds `127.0.0.1` only; API never returns tokens.  
-- Provider keys / gateway tokens sit in the process environment of claude and every child (hooks, MCP, Bash tool). Use keys you accept for that blast radius.  
+- A credential sits in the process environment of claude and every child (hooks, MCP, Bash tool). Direct providers expose their API key; `ds` and `codex` expose only the localhost gateway key.  
 - First switch into a provider account prints a one-time disclosure about shared history and env visibility.
 
 ---

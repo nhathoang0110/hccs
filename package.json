@@ -1,7 +1,7 @@
 {
   "name": "@hoangnn23/hccs",
   "version": "1.2.1",
-  "description": "Switch between multiple Claude Code accounts without re-authenticating, with GLM/Codex providers and a per-account usage & cost dashboard",
+  "description": "Switch between multiple Claude Code accounts without re-authenticating, with GLM, DeepSeek/OpenCode Go, and Codex providers and a per-account usage & cost dashboard",
   "license": "MIT",
   "author": "hoangnn",
   "repository": {
@@ -38,6 +38,8 @@
     "usage",
     "dashboard",
     "codex",
+    "deepseek",
+    "opencode",
     "cliproxyapi"
   ],
   "engines": {

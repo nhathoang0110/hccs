@@ -21,7 +21,7 @@ set -euo pipefail
 HCCS_HOME="${HCCS_HOME:-$HOME/.hccs}"
 HCCS_CLAUDE_DIR="${HCCS_CLAUDE_DIR:-$HOME/.claude}"
 HCCS_OS="$(uname -s)"
-# CLIProxyAPI (Claudex / codex preset) — under HCCS_HOME so uninstall can wipe it.
+# CLIProxyAPI (Codex OAuth + OpenCode protocol translation) — under HCCS_HOME.
 HCCS_PROXY_HOME="${HCCS_PROXY_HOME:-$HCCS_HOME/proxy}"
 HCCS_CPA_VERSION="${HCCS_CPA_VERSION:-7.2.128}"
 HCCS_CPA_HOST="${HCCS_CPA_HOST:-127.0.0.1}"
@@ -41,11 +41,11 @@ Usage:
   hccs <account> [claude args...]   Run claude as <account> (all flags pass through)
   hccs add <account> [claude args]  Create a new account and log in once
   hccs add <account> --provider <preset> [--slot <name>] [claude args]
-                                    Create an API-key / Claudex account for a provider
+                                    Create an API-key / proxied account for a provider
   hccs add-token <account>          Store/replace a provider account's API key
   hccs refresh-preset <account>     Re-apply the built-in preset (keeps the key)
   hccs codex-login [slot]           Login ChatGPT/Codex OAuth into a proxy slot
-  hccs proxy status|start|stop      Manage the local CLIProxyAPI used by codex
+  hccs proxy status|start|stop      Manage the local CLIProxyAPI
   hccs list                         List accounts and emails
   hccs which                        Show the most recently used account
   hccs remove <account>             Delete an account (config + credentials)
@@ -54,8 +54,9 @@ Usage:
   hccs uninstall                    Remove hccs completely (default Claude untouched)
   hccs -h | --help                  Show this help
 
-Provider presets: glm, codex
-  `hccs glm` creates the account on first use and asks for the API key once.
+Provider presets: glm, ds, codex
+  `hccs glm` creates the account on first use and asks for the z.ai API key once.
+  `hccs ds` runs DeepSeek V4.1 Flash using your OpenCode Go API key.
   `hccs codex` runs Claude Code via local CLIProxyAPI (Claudex) with model gpt-5.6-*.
   `hccs codex-work` pins ChatGPT OAuth slot "work" (after hccs codex-login work).
   Everything except auth is still shared with your other accounts.
@@ -66,6 +67,7 @@ Examples:
   hccs work --resume
   hccs personal -p "hello"
   hccs glm                          # first run asks for the z.ai API key
+  hccs ds                           # first run asks for the OpenCode Go API key
   hccs add myglm --provider glm
   hccs codex-login                  # import ~/.codex or OAuth into slot "default"
   hccs codex                        # Claudex, slot default
@@ -149,17 +151,17 @@ sed_inplace() {  # $1 = expr, $2 = file
 }
 
 # ── Provider accounts ───────────────────────────────────────────────────────
-# A "provider account" runs Claude Code against an Anthropic-compatible endpoint
-# (e.g. z.ai/GLM) with an API key instead of an Anthropic OAuth login. It reuses
-# the same CLAUDE_CONFIG_DIR mechanism as a normal account; only two things are
-# different:
+# A "provider account" runs Claude Code against an Anthropic-compatible endpoint,
+# directly or through the managed local protocol proxy, using provider credentials
+# instead of an Anthropic OAuth login. It reuses the same CLAUDE_CONFIG_DIR
+# mechanism as a normal account; only two things are different:
 #   - settings.json is a REAL file composed by hccs (shared settings + provider
 #     env overlay), because a settings `env` block overrides the process env.
-#   - the API key is injected as ANTHROPIC_AUTH_TOKEN at exec time and is never
-#     written into settings.json.
+#   - the credential injected as ANTHROPIC_AUTH_TOKEN is either the upstream key
+#     or the managed proxy's gateway key; neither is written into settings.json.
 
-# Bump whenever a preset below changes, so existing accounts can detect drift.
-# v2: codex preset + proxy metadata in marker.
+# Bump when an existing preset changes, so its accounts can detect drift.
+# Adding a new preset is backward-compatible and does not invalidate snapshots.
 HCCS_PRESET_VERSION=2
 
 # Env for a preset, one KEY=VALUE per line.
@@ -196,12 +198,27 @@ ENABLE_TOOL_SEARCH=false
 API_TIMEOUT_MS=3000000
 EOF
       ;;
+    ds)
+      # OpenCode Go exposes DeepSeek through OpenAI Chat Completions, so the
+      # managed CLIProxyAPI translates Claude Messages locally.
+      cat <<EOF
+ANTHROPIC_BASE_URL=http://${HCCS_CPA_HOST}:${HCCS_CPA_PORT}
+ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4.1-flash
+ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4.1-flash
+ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4.1-flash
+ANTHROPIC_DEFAULT_FABLE_MODEL=deepseek-v4.1-flash
+CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4.1-flash
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+ENABLE_TOOL_SEARCH=false
+API_TIMEOUT_MS=3000000
+EOF
+      ;;
     *) return 1 ;;
   esac
 }
 
 preset_exists() { preset_env "$1" >/dev/null 2>&1; }
-preset_names()  { printf 'glm codex'; }
+preset_names()  { printf 'glm ds codex'; }
 
 # True when the account dir is a provider account. The marker MUST be a real
 # file: every entry of ~/.claude is symlinked in (dotglob), so a same-named file
@@ -394,7 +411,11 @@ provider_base_url() {  # $1 = cfgdir
   python3 - "$1/.hccs-provider.json" <<'PY'
 import json, sys
 try:
-    print((json.load(open(sys.argv[1])).get("env") or {}).get("ANTHROPIC_BASE_URL") or "")
+    marker = json.load(open(sys.argv[1]))
+    if marker.get("provider") == "ds":
+        print("https://opencode.ai/zen/go/ (through the local proxy)")
+    else:
+        print((marker.get("env") or {}).get("ANTHROPIC_BASE_URL") or "")
 except Exception:
     print("")
 PY
@@ -458,8 +479,9 @@ warn_once_provider_disclosure() {  # $1 = cfgdir, $2 = account
 hccs: '$2' is a provider account — Claude Code will talk to ${host:-the provider}, not Anthropic.
       · Session history is shared with your other accounts: resuming an Anthropic
         session here replays its full transcript to that endpoint.
-      · The API key lives in the environment of claude and every process it starts
-        (hooks, plugins, MCP servers, statusline, and the model's own Bash tool).
+      · A credential lives in claude's environment and every process it starts.
+        Proxied providers expose a localhost gateway key; direct providers expose
+        their API key (hooks, plugins, MCP servers, statusline, and Bash inherit it).
       This notice is shown once per account.
 EOF
   : >"$flag" 2>/dev/null || true
@@ -940,7 +962,7 @@ cmd_add() {
     if provider_uses_stored_token "$preset"; then
       store_token "$cfg" "$tok"
     fi
-    provider_on_create "$cfg" "$acc" "$preset" "$slot"
+    tok="$(provider_on_create "$cfg" "$acc" "$preset" "$slot" "$tok")"
     rm -f "$cfg/.hccs-provider.pending"
   fi
   sync_links "$cfg"
