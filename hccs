@@ -201,6 +201,12 @@ EOF
     ds)
       # OpenCode Go exposes DeepSeek through OpenAI Chat Completions, so the
       # managed CLIProxyAPI translates Claude Messages locally.
+      #
+      # DeepSeek V4.1 Flash has a 1M context window, but Claude Code assumes 200K
+      # for a model ID it cannot resolve, which a gateway alias is. Declaring the
+      # real window is what makes sessions use it; without it, auto-compaction
+      # fires at 200K. The variable applies directly here because the ID carries
+      # no [1m] suffix.
       cat <<EOF
 ANTHROPIC_BASE_URL=http://${HCCS_CPA_HOST}:${HCCS_CPA_PORT}
 ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4.1-flash
@@ -208,6 +214,7 @@ ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4.1-flash
 ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4.1-flash
 ANTHROPIC_DEFAULT_FABLE_MODEL=deepseek-v4.1-flash
 CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4.1-flash
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 ENABLE_TOOL_SEARCH=false
 API_TIMEOUT_MS=3000000

@@ -144,6 +144,8 @@ OpenCode Go phục vụ `deepseek-v4.1-flash` qua OpenAI Chat Completions (`/v1/
 
 Key OpenCode nằm trong Keychain hoặc file token mode `600`, và trong config proxy mode `600`. Claude Code chỉ nhận gateway key localhost. Catalog model có thể đổi; `hccs refresh-preset ds` cập nhật account cũ sau khi hccs đổi preset.
 
+DeepSeek V4.1 Flash có context window 1M token, nhưng Claude Code mặc định coi model ID nó không nhận ra — tức một alias của gateway — là 200K. Preset khai báo window thật bằng `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000`, nên session dùng hết window thay vì auto-compact ở 200K. Account tạo trước thay đổi này nhận giá trị mới bằng `hccs refresh-preset ds`.
+
 Key: [OpenCode console](https://opencode.ai/auth).
 
 ### 4) Codex / ChatGPT trong Claude Code (Claudex)

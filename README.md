@@ -144,6 +144,8 @@ OpenCode Go serves `deepseek-v4.1-flash` as OpenAI Chat Completions (`/v1/chat/c
 
 The OpenCode key stays in the Keychain or a mode-`600` token file, and in the generated mode-`600` proxy config. Claude Code receives only the localhost gateway key. The model catalog can change; `hccs refresh-preset ds` updates an existing account after hccs changes the preset.
 
+DeepSeek V4.1 Flash has a 1M-token context window, but Claude Code assumes 200K for a model ID it can't resolve — which a gateway alias is. The preset declares the real window with `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000`, so sessions use all of it instead of auto-compacting at 200K. Accounts created before this change pick it up with `hccs refresh-preset ds`.
+
 Key: [OpenCode console](https://opencode.ai/auth).
 
 ### 4) Codex / ChatGPT models inside Claude Code (Claudex)
