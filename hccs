@@ -162,7 +162,7 @@ sed_inplace() {  # $1 = expr, $2 = file
 
 # Bump when an existing preset changes, so its accounts can detect drift.
 # Adding a new preset is backward-compatible and does not invalidate snapshots.
-HCCS_PRESET_VERSION=2
+HCCS_PRESET_VERSION=3
 
 # Env for a preset, one KEY=VALUE per line.
 # ANTHROPIC_AUTH_TOKEN is deliberately absent: the token travels through the
@@ -173,10 +173,10 @@ preset_env() {
     glm)
       cat <<'EOF'
 ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
-ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.7
-ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2[1m]
-ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2[1m]
-ANTHROPIC_DEFAULT_FABLE_MODEL=glm-5.2[1m]
+ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-5.3-flash
+ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.3[1m]
+ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.3[1m]
+ANTHROPIC_DEFAULT_FABLE_MODEL=glm-5.3[1m]
 CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 API_TIMEOUT_MS=3000000
@@ -428,9 +428,9 @@ except Exception:
 PY
 }
 
-# Warn when the marker was written by an older preset. Values are snapshotted at
-# creation on purpose (an upgrade must not silently change a working account),
-# so the fix is opt-in via `hccs refresh-preset`.
+# Auto-refresh when the marker was written by an older preset. Previous
+# behaviour was warn-only; now we apply the update silently so `hccs glm`
+# always uses the latest model IDs without requiring `hccs refresh-preset`.
 check_preset_drift() {  # $1 = cfgdir, $2 = account
   local v
   v="$(python3 - "$1/.hccs-provider.json" <<'PY'
@@ -442,7 +442,24 @@ except Exception:
 PY
 )"
   if [ "$v" != "$HCCS_PRESET_VERSION" ]; then
-    warn "account '$2' was created with preset version $v (current: $HCCS_PRESET_VERSION) — run: hccs refresh-preset $2"
+    local preset slot
+    preset="$(provider_of "$1")"
+    if [ -n "$preset" ] && preset_exists "$preset"; then
+      slot=""
+      slot="$(python3 - "$1/.hccs-provider.json" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("slot") or "")
+except Exception:
+    print("")
+PY
+)"
+      write_provider_marker "$1" "$preset" "$slot"
+      compose_settings "$1"
+      warn "auto-refreshed preset '$preset' for '$2' (v$v → v$HCCS_PRESET_VERSION)"
+    else
+      warn "account '$2' uses unknown preset '$preset' — run: hccs refresh-preset $2"
+    fi
   fi
   return 0
 }
